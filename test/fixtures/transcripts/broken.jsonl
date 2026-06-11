@@ -1,0 +1,10 @@
+{"type":"assistant","timestamp":"2026-06-02T09:00:00.000Z","sessionId":"session-002","cwd":"/home/user/project-b","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu1","name":"Skill","input":{"skill":"deep-research"}}]}}
+this is not valid json {{{
+{"type":"assistant","timestamp":"2026-06-02T09:01:00.000Z","sessionId":"session-002","cwd":"/home/user/project-b","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu2","name":"mcp__voisona__speak","input":{"text":"hello"}}]}}
+broken line without closing brace
+{"type":"assistant","sessionId":"session-002","cwd":"/home/user/project-b","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu3","name":"Skill","input":{"skill":"no-timestamp-skill"}}]}}
+{"type":"assistant","timestamp":"2026-06-02T09:02:00.000Z","sessionId":"session-002","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu4","name":"Skill","input":{"skill":"no-cwd-skill"}}]}}
+{"type":"assistant","timestamp":"2026-06-02T09:03:00.000Z","cwd":"/home/user/project-b","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu5","name":"Skill","input":{"skill":"no-sessionid-skill"}}]}}
+{"type":"assistant","timestamp":"2026-06-02T09:04:00.000Z","sessionId":"session-002","cwd":"/home/user/project-b","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu6","name":"Bash","input":{"command":"ls"}}]}}
+{"type":"system","timestamp":"2026-06-02T09:05:00.000Z","sessionId":"session-002","cwd":"/home/user/project-b","message":{"content":"system message"}}
+{"type":"assistant","timestamp":"2026-06-02T09:06:00.000Z","sessionId":"session-002","cwd":"/home/user/project-b","message":{"role":"assistant","content":[{"type":"tool_use","id":"tu7","name":"Skill","input":{"skill":"valid-after-broken"}}]}}
