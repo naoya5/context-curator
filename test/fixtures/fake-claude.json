@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "test-server": {
+      "command": "node",
+      "args": ["/path/to/test-server/index.js"],
+      "env": {}
+    },
+    "another-server": {
+      "command": "python3",
+      "args": ["-m", "another_server"]
+    }
+  }
+}
