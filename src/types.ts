@@ -36,7 +36,7 @@ export interface UsageStats {
   projects: string[];
 }
 
-export type FindingType = 'stale' | 'unused' | 'bloated' | 'zombie';
+export type FindingType = 'stale' | 'unused' | 'bloated' | 'zombie' | 'duplicate';
 
 export interface Finding {
   asset: Asset;
@@ -44,10 +44,54 @@ export interface Finding {
   reason: string;
   severity: 'info' | 'warn' | 'high';
   suggestion: string;
+  /** duplicate のとき、相手側 asset の id */
+  counterpartId?: string;
 }
 
 export interface Inventory {
   assets: Asset[];
   scannedAt: string;      // ISO8601
   warnings: string[];     // parse 失敗等
+}
+
+// ─── v0.2: apply / archive / restore (DESIGN.md §8) ─────────────────────────
+
+/** apply が提示する1件の操作提案。Finding から導出される */
+export interface Proposal {
+  /** 提案の一意キー = finding の asset.id */
+  assetId: string;
+  asset: Asset;
+  action: 'archive';            // v0.2 は archive のみ（merge は将来）
+  findingType: FindingType;
+  reason: string;
+}
+
+/** アーカイブ1件分のメタデータ。~/.curator/archive/<archiveId>/manifest.json */
+export interface ArchiveManifest {
+  archiveId: string;            // `${YYYYMMDD-HHmmss}-${kind}-${name}` を sanitize
+  archivedAt: string;           // ISO8601
+  /** restore 済みの場合のみ。listArchives は未復元のみデフォルト表示 */
+  restoredAt?: string;
+  assetId: string;
+  kind: AssetKind;
+  name: string;
+  findingType: FindingType;     // なぜ archive されたか（provenance）
+  reason: string;
+  /** ファイル系資産: 移動したエントリ一覧（dir 丸ごとなら1件） */
+  entries: Array<{ originalPath: string; archivedPath: string }>;
+  /** mcp-server のみ: 除去した設定の復元情報 */
+  mcpRestore?: {
+    configPath: string;         // 編集した JSON ファイルの絶対パス
+    serverName: string;
+    serverConfig: unknown;      // 除去した mcpServers[serverName] の値
+  };
+}
+
+/** ~/.curator/journal.jsonl の1行。apply/restore の append-only 監査ログ */
+export interface JournalEntry {
+  ts: string;
+  op: 'archive' | 'restore';
+  archiveId: string;
+  assetId: string;
+  detail: string;
 }

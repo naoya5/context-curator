@@ -11,6 +11,8 @@ export interface PolicyConfig {
     skillFullTokens: number;
     memoryFileTokens: number;
   };
+  /** Jaccard similarity threshold for duplicate skill detection (DESIGN.md §8.4) */
+  duplicateThreshold: number;
 }
 
 export interface CuratorConfig {
@@ -27,6 +29,7 @@ const DEFAULTS: CuratorConfig = {
       skillFullTokens: 8000,
       memoryFileTokens: 2000,
     },
+    duplicateThreshold: 0.65,
   },
   ignore: [],
 };

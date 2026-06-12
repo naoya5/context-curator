@@ -2,6 +2,7 @@
 import type { Asset, Finding, UsageStats } from '../types.js';
 import type { PolicyConfig } from '../config.js';
 import { isIgnored, checkStale, checkUnused, checkBloated, checkZombie } from './rules.js';
+import { detectDuplicates } from './duplicates.js';
 
 // ---------------------------------------------------------------------------
 // kind mapping: asset kind  ←→  UsageStats kind
@@ -66,6 +67,15 @@ export function evaluate(
       if (finding) findings.push(finding);
     }
   }
+
+  // Duplicate detection: only compare non-ignored assets
+  const activeAssets = assets.filter((a) => !isIgnored(a.id, ignore));
+  const duplicateFindings = detectDuplicates(
+    activeAssets,
+    stats,
+    policy.duplicateThreshold,
+  );
+  findings.push(...duplicateFindings);
 
   return findings;
 }

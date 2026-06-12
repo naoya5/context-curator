@@ -245,8 +245,101 @@ curator cost   [--json]                          # Health Score レポート
 
 ## 7. 実装上の絶対条件（監査チェック項目）
 
-1. **~/.claude 配下への書き込みコードが存在しないこと**（fs write 系の宛先は ~/.curator のみ）
+1. ~~**~/.claude 配下への書き込みコードが存在しないこと**~~ → v0.2 で改訂: **~/.claude への書き込みは
+   §8 の apply/restore 経路（ユーザー承認済み操作）のみ**。それ以外のモジュール（scan/usage/policy/report)は
+   引き続き read-only。削除（unlink/rm）は全コードベースで禁止 — 移動（rename）のみ
 2. transcript パースは stream（readline）で行い、ファイル全文を文字列に載せない
 3. 全 scanner / parser は対象不在・壊れたデータで例外を投げず空配列 + 警告カウント
 4. 依存パッケージは package.json に記す前に必要性を吟味（目標: 実行時依存 3 個以下）
 5. トークン数は常に `~` 付き推定表示。MCP は unknown と正直に出す
+
+---
+
+## 8. v0.2 — 承認制 archive / restore + 重複検出（2026-06-13 設計）
+
+> 設計思想: **「絶対に消さない。移動して、いつでも戻せる」**。unclog の「即時削除・アンドゥ不可」への
+> 明確なカウンター。Skeptical Review 思想の実装。
+
+### 8.1 ディレクトリ構成（~/.curator 配下）
+
+```
+~/.curator/
+├── ledger.jsonl / state.json / history.jsonl / config.yaml   # v0.1 既存
+├── archive/
+│   └── <archiveId>/          # 例: 20260613-101502-skill-find-skills
+│       ├── manifest.json     # ArchiveManifest（types.ts）
+│       └── payload/          # 移動したファイル/ディレクトリ（原構造を保持）
+├── backups/
+│   └── <basename>.<ts>.json  # claude.json 等を編集する直前のフルコピー
+└── journal.jsonl             # JournalEntry の append-only 監査ログ
+```
+
+### 8.2 archive モジュール（src/apply/archive.ts ほか)
+
+**対象 kind とアーカイブ方法:**
+
+| kind | 方法 |
+|---|---|
+| skill | スキルディレクトリ丸ごと `rename` で payload/ へ移動（cross-device 時は copy+verify+rm fallback。fallback の rm はこのケースのみ許可） |
+| command / agent / memory | 単一 .md ファイルを移動 |
+| mcp-server | 定義元 JSON（~/.claude.json 等）から `mcpServers[name]` エントリを除去。**ファイル移動なし**。除去した値は manifest.mcpRestore に保存 |
+| claude-md | **対象外**（archive 不可。bloated は提案文言のみ） |
+
+**mcp-server の JSON 編集手順（安全クリティカル）:**
+1. 対象 JSON を読み、パース失敗なら**中止**（壊れた設定を触らない）
+2. `~/.curator/backups/<basename>.<ISO-ts>.json` にフルコピーを書く
+3. メモリ上で `mcpServers[serverName]` を delete し、**tmp ファイルに書いて rename**（atomic write）
+4. JSON のその他のキー・整形は `JSON.stringify(obj, null, 2)` で統一（元の整形は backup が保持）
+
+**API:**
+```ts
+archiveAsset(paths, proposal: Proposal): Promise<ArchiveManifest>   // 1件実行 + journal 追記
+listArchives(paths): Promise<ArchiveManifest[]>
+restoreArchive(paths, archiveId): Promise<void>                     // 復元 + journal 追記
+```
+
+**restore の規約:**
+- 復元先に既に同名ファイル/ディレクトリ/サーバー定義が存在する場合は**エラーで中止**（上書きしない）
+- 復元成功後、archive/<archiveId>/ ディレクトリは `archive/<archiveId>/manifest.json` の
+  `restoredAt` フィールドを追記した上で**残す**（履歴として保持。容量が気になるユーザーは手動削除）
+  → manifest に `restoredAt?: string` を追加。listArchives は未復元のみデフォルト表示
+- mcp-server の復元は同じ backup + atomic write 手順で configPath に再挿入
+
+### 8.3 apply コマンド（src/apply/proposals.ts + cli 配線）
+
+```
+curator apply [--filter <type>] [--ids <id,...>] [--dry-run] [--yes] [--json]
+```
+
+1. check と同じ評価パイプラインを実行し、Finding[] から **Proposal[]** を構築
+   - 対象: stale / unused / zombie / duplicate の finding のうち、kind が archive 可能なもの
+   - bloated は除外（分割・削減はユーザーの編集作業であり、archive は不適切）
+   - duplicate は **counterpart（使用回数が多い/新しい方）ではなく、finding が付いた側**のみ提案
+2. `--dry-run`: 提案一覧と「何がどこへ移動するか」を表示して終了（書き込みゼロ）
+3. 対話モード（デフォルト）: 1件ずつ `[y/n/q]` で確認。q で以降すべて中止
+   - 対話ループは pure な proposal-builder と分離し、readline 部分は薄く保つ（テスト容易性）
+4. `--yes`: 全提案を承認扱い（cron 用ではなく「一覧確認済み」ユーザー向け。--filter / --ids との併用を推奨）
+5. 実行結果サマリ（archived N 件、skipped M 件、journal 追記済み）を表示
+
+### 8.4 重複検出（src/policy/duplicates.ts）
+
+- **対象: skill のみ**（v0.2）。比較テキスト = `name + ' ' + description`（frontmatter due）
+- 正規化: NFKC → lowercase → 記号除去。トークン化は **ASCII 単語 + CJK 文字 bigram** の混合集合
+- 類似度: Jaccard。`policy.duplicateThreshold`（デフォルト **0.65**、config.yaml で変更可）
+- ペアごとに finding は **1件**: 「アーカイブ候補側」（使用回数が少ない方。同数なら modifiedAt が古い方）に付与
+  - reason 例: `"スキル 'x-thread' と 78% 類似（使用 2回 vs 41回）"`、counterpartId に相手の asset.id
+  - severity: 'info'（自動 archive 推奨はしない。apply では確認必須の提案として出る）
+- 計算量: スキル数 n の O(n²)。n < 1000 想定で問題なし
+
+### 8.5 v0.2 のテスト必須項目
+
+- archive→restore ラウンドトリップ（skill dir / command file / mcp entry）で元の状態に完全復帰
+- restore 時の衝突（同名存在）でエラー + 何も変更されないこと
+- mcp 編集で backup が必ず作られること、JSON パース失敗時に中止されること
+- --dry-run が一切書き込まないこと（fixtures の mtime/内容不変を検証）
+- 重複検出: 同一説明 / 無関係説明 / 日本語説明ペアの境界、threshold 変更の反映
+- journal.jsonl に archive/restore が必ず1行ずつ追記されること
+
+### 8.6 バージョニング
+
+package.json を 0.2.0 に bump。CHANGELOG.md を新設。

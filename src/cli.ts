@@ -9,7 +9,10 @@ import { updateLedger, loadUsageStats, clearLedger } from './usage/index.js';
 import { evaluate } from './policy/engine.js';
 import { buildCheckReport } from './report/check.js';
 import { buildCostReport, appendHistory } from './report/cost.js';
-import type { Asset, AssetKind, FindingType, UsageStats } from './types.js';
+import { buildProposals, describeProposal } from './apply/proposals.js';
+import { archiveAsset } from './apply/archive.js';
+import { listArchives, restoreArchive } from './apply/restore.js';
+import type { Asset, AssetKind, FindingType, Proposal, UsageStats } from './types.js';
 
 const FINDING_TYPES: FindingType[] = ['stale', 'unused', 'bloated', 'zombie'];
 
@@ -18,7 +21,7 @@ const program = new Command();
 program
   .name('curator')
   .description('Claude context asset inventory and hygiene tool')
-  .version('0.1.0');
+  .version('0.2.0');
 
 // ─── scan ──────────────────────────────────────────────────────────────────
 program
@@ -206,6 +209,138 @@ program
     }
   });
 
+// ─── apply ─────────────────────────────────────────────────────────────────
+program
+  .command('apply')
+  .description('Archive assets flagged by check, with per-item approval')
+  .option('--filter <type>', 'Only propose findings of this type (stale|unused|zombie|duplicate)')
+  .option('--ids <ids>', 'Comma-separated asset ids to propose')
+  .option('--dry-run', 'Show what would happen without writing anything')
+  .option('--yes', 'Approve all proposals without prompting')
+  .option('--json', 'Output result as JSON')
+  .action(async (opts: {
+    filter?: string; ids?: string; dryRun?: boolean; yes?: boolean; json?: boolean;
+  }) => {
+    if (opts.filter && !FINDING_TYPES.includes(opts.filter as FindingType)) {
+      console.error(pc.red(`--filter must be one of: ${FINDING_TYPES.join(', ')}`));
+      process.exit(2);
+    }
+    const paths = resolvePaths();
+    const findings = await runEvaluation();
+    const proposals = buildProposals(findings, {
+      filter: opts.filter as FindingType | undefined,
+      ids: opts.ids ? opts.ids.split(',').map((s) => s.trim()) : undefined,
+    });
+
+    if (proposals.length === 0) {
+      console.log(pc.dim('アーカイブ提案はありません。'));
+      return;
+    }
+
+    if (opts.dryRun) {
+      console.log(pc.bold(`\nDry run — ${proposals.length} 件の提案（書き込みなし）\n`));
+      for (const p of proposals) {
+        console.log(`  ${pc.yellow(p.findingType.padEnd(9))} ${pc.green(p.assetId)}`);
+        console.log(pc.dim(`    理由: ${p.reason}`));
+        console.log(pc.dim(`    操作: ${describeProposal(p)}`));
+      }
+      return;
+    }
+
+    const approved: Proposal[] = [];
+    if (opts.yes) {
+      approved.push(...proposals);
+    } else {
+      const { createInterface } = await import('node:readline/promises');
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      try {
+        for (const p of proposals) {
+          console.log(`\n${pc.yellow(p.findingType.padEnd(9))} ${pc.green(p.assetId)}`);
+          console.log(pc.dim(`  理由: ${p.reason}`));
+          console.log(pc.dim(`  操作: ${describeProposal(p)}`));
+          const ans = (await rl.question('  アーカイブする? [y/n/q] ')).trim().toLowerCase();
+          if (ans === 'q') break;
+          if (ans === 'y') approved.push(p);
+        }
+      } finally {
+        rl.close();
+      }
+    }
+
+    let archived = 0;
+    const errors: string[] = [];
+    for (const p of approved) {
+      try {
+        const manifest = await archiveAsset(paths, p);
+        archived++;
+        if (!opts.json) {
+          console.log(pc.green(`  ✓ archived: ${p.assetId} → ${manifest.archiveId}`));
+        }
+      } catch (e) {
+        errors.push(`${p.assetId}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+
+    const summary = {
+      proposed: proposals.length,
+      approved: approved.length,
+      archived,
+      skipped: proposals.length - approved.length,
+      errors,
+    };
+    if (opts.json) {
+      process.stdout.write(JSON.stringify(summary, null, 2) + '\n');
+    } else {
+      console.log(
+        `\n${pc.bold('Summary')}  archived: ${archived}  skipped: ${summary.skipped}` +
+        (errors.length ? pc.red(`  errors: ${errors.length}`) : ''),
+      );
+      for (const err of errors) console.error(pc.red(`  ✗ ${err}`));
+      console.log(pc.dim(`復元するには: curator restore <archiveId>`));
+    }
+    if (errors.length > 0) process.exit(1);
+  });
+
+// ─── restore ───────────────────────────────────────────────────────────────
+program
+  .command('restore')
+  .description('List archived assets, or restore one by archiveId')
+  .argument('[archiveId]', 'Archive id to restore (omit to list)')
+  .option('--all', 'Include already-restored entries in the list')
+  .option('--json', 'Output as JSON')
+  .action(async (archiveId: string | undefined, opts: { all?: boolean; json?: boolean }) => {
+    const paths = resolvePaths();
+    if (!archiveId) {
+      const archives = await listArchives(paths, { all: opts.all });
+      if (opts.json) {
+        process.stdout.write(JSON.stringify(archives, null, 2) + '\n');
+        return;
+      }
+      if (archives.length === 0) {
+        console.log(pc.dim('アーカイブはありません。'));
+        return;
+      }
+      console.log(pc.bold('\nArchived assets'));
+      for (const m of archives) {
+        const restored = m.restoredAt ? pc.dim(` (restored ${m.restoredAt.slice(0, 10)})`) : '';
+        console.log(
+          `  ${pc.green(m.archiveId.padEnd(44))} ${pc.dim(m.kind.padEnd(11))}` +
+          `${m.archivedAt.slice(0, 10)}${restored}`,
+        );
+        console.log(pc.dim(`    ${m.reason}`));
+      }
+      console.log(pc.dim(`\n復元するには: curator restore <archiveId>`));
+      return;
+    }
+    try {
+      await restoreArchive(paths, archiveId);
+      console.log(pc.green(`✓ restored: ${archiveId}`));
+    } catch (e) {
+      console.error(pc.red(`✗ restore failed: ${e instanceof Error ? e.message : String(e)}`));
+      process.exit(1);
+    }
+  });
+
 /** Shared pipeline for check: scan + ledger update + policy evaluation */
 async function runEvaluation() {
   const paths = resolvePaths();
@@ -216,7 +351,7 @@ async function runEvaluation() {
   return evaluate(inventory.assets, stats, config.policy, config.ignore);
 }
 
-program.parse(process.argv);
+await program.parseAsync(process.argv);
 
 // ─── helpers ───────────────────────────────────────────────────────────────
 function kindColor(kind: AssetKind): string {
