@@ -56,6 +56,11 @@ npm run build && npm link      # curator コマンドとして
 | `curator cost` | Context Health Score レポート（実行ごとに `~/.curator/history.jsonl` へ記録） |
 | `curator apply` | 検出結果を1件ずつ承認してアーカイブ。`--dry-run` `--yes` `--ids` `--filter` |
 | `curator restore` | アーカイブ一覧 / `restore <archiveId>` で復元（衝突時は中止・上書きしない） |
+| `curator mcp` | プロジェクト × MCP サーバー使用マトリクスと無効化候補の提案（表示のみ） |
+| `curator cost --history` | Health Score の時系列推移（スパークライン付き） |
+| `curator install-skill` | `/curator` スキルラッパーを `~/.claude/skills/curator/` にインストール |
+
+`scan` / `check` / `cost` は `--all-projects` で全プロジェクトの project スコープ資産を統合できる。
 
 全コマンド `--json` 対応。`check` は high severity 検出時に exit 1（CI 組み込み用）。
 
@@ -90,7 +95,8 @@ ignore:
 ## ロードマップ
 
 - ~~v0.2: 承認制 archive（復元可能な片付け）/ 重複スキル検出~~ ✅ 完了
-- v0.3: MCP active-set 提案 / `/curator` スキルラッパー / Health Score 時系列ダッシュボード / `--all-projects`
+- ~~v0.3: MCP active-set 提案 / `/curator` スキルラッパー / Health Score 時系列 / `--all-projects`~~ ✅ 完了
+- v0.4 候補: npm 公開 / MCP 無効化の承認制 apply 統合 / memory 内容 lint（古い事実・矛盾検出）
 
 ## 開発
 
