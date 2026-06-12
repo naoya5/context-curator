@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.0 (2026-06-13)
+
+### Added
+- `/curator` スキルラッパー（`skill/SKILL.md`）と `curator install-skill [--force]` —
+  スキル自身のコンテキスト消費を最小化した薄い設計（frontmatter + コマンド対応表のみ）
+- `curator mcp` — プロジェクト × MCP サーバーの使用マトリクスと、プロジェクト別の
+  無効化候補（active-set）提案。`--days N` / `--all` 対応。表示のみ（設定編集はしない）
+- `curator cost --history [--limit N]` — Health Score の時系列表示（スパークライン付き）
+- `--all-projects`（scan / check / cost）— ledger に現れた全プロジェクトの
+  project スコープ資産を統合してスキャン
+
 ## 0.2.0 (2026-06-13)
 
 ### Added

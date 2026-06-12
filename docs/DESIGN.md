@@ -343,3 +343,56 @@ curator apply [--filter <type>] [--ids <id,...>] [--dry-run] [--yes] [--json]
 ### 8.6 バージョニング
 
 package.json を 0.2.0 に bump。CHANGELOG.md を新設。
+
+---
+
+## 9. v0.3 — スキルラッパー / MCP active-set / 時系列 / 全プロジェクト（2026-06-13 設計）
+
+### 9.1 `/curator` スキルラッパー（skill/SKILL.md + install-skill）
+
+- リポジトリの `skill/SKILL.md` が配布物。**コンテキスト消費最小化が本品の存在意義なので、
+  スキル自身が重いのは自己矛盾** — frontmatter ~50 tokens、本文 1KB 以下を厳守
+- 本文の方針: コマンド対応表（自然文→CLI）と運用ルール2つのみ
+  （「`--json` で取得して要約せよ」「apply は必ず dry-run を先に提示し、実行はユーザー承認後」）
+- `curator install-skill [--force]`: `skill/SKILL.md` → `~/.claude/skills/curator/SKILL.md` にコピー
+  - 既存ファイルがあり `--force` なしならエラー（上書きしない）
+  - これは §7 の例外に該当する「ユーザーの明示的コマンドによる ~/.claude への書き込み」
+  - コピー後、`curator` バイナリが PATH に無ければ警告（npm link / npm i -g を案内）
+  - skill ソースの解決: 実行中モジュールからの相対（dist/ からも src/ からも辿れるよう
+    `new URL('../..', import.meta.url)` 起点で skill/SKILL.md を探す）
+
+### 9.2 `curator mcp` — MCP active-set 提案
+
+- ledger の UsageEvent（kind: 'mcp-tool'）を cwd × server で再集計（`loadMcpMatrix(paths, opts?)` を
+  usage モジュールに追加 — read 系のみ）
+- 表示: 行 = グローバル定義済み MCP サーバー（inventory から）、列 = ledger に現れた cwd
+  （basename 表示、`--days N` で窓指定、デフォルト全期間）。セル = 呼び出し回数
+- 提案: グローバル定義サーバーのうち、あるプロジェクトでの使用が 0 のものを
+  「そのプロジェクトでは無効化候補」として列挙。文言に settings.json での無効化方法のヒントを含める
+- v0.3 は**表示のみ**（設定の自動編集はしない。編集は将来の apply 拡張で承認制に乗せる）
+- プロジェクト数が多い場合は使用イベント総数上位 8 プロジェクトに絞る（--all で全表示）
+
+### 9.3 `curator cost --history`
+
+- `~/.curator/history.jsonl` を読み、同日複数実行は**最後のエントリを採用**して日次系列に正規化
+- 表示: 日付 / score / total / stale の表 + Unicode ブロック（▁▂▃▄▅▆▇█）による score スパークライン
+- `--limit N`（デフォルト 30）。history が空なら「まず curator cost を実行して」と案内
+
+### 9.4 `--all-projects`（scan / check / cost 共通オプション）
+
+- プロジェクト発見: ledger イベントの cwd を重複排除 → `existsSync` で実在確認 →
+  各ディレクトリを projectDir として project スコープ資産をスキャンし統合
+- asset.id 衝突: 既存規約（重複時はパス付加）に従う。scope はすべて 'project'
+- buildInventory にオプション `{ allProjects?: boolean }` を追加（usage の cwd 一覧は引数で注入し、
+  scan→usage の依存逆転を避ける: cli 側で cwd リストを取得して渡す）
+
+### 9.5 テスト必須項目
+
+- install-skill: コピー成功 / 既存ありエラー / --force 上書き / skill ソース不在エラー
+- mcp matrix: cwd×server 集計、--days 窓、未使用プロジェクト提案の正確性
+- history: 同日重複の最後採用、limit、空 history
+- all-projects: 複数プロジェクト fixture の統合、存在しない cwd のスキップ
+
+### 9.6 バージョニング
+
+package.json / cli を 0.3.0 に bump。CHANGELOG 追記。

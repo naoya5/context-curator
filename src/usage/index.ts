@@ -16,11 +16,16 @@ import {
   loadUsageStats as _loadUsageStats,
   clearLedger,
 } from './ledger.js';
+import { loadMcpMatrix, listKnownProjectDirs } from './matrix.js';
 
 export type { UpdateLedgerResult } from './ledger.js';
+export type { McpMatrix } from '../types.js';
 
 // Re-export for consumers that want the lower-level API
 export { clearLedger };
+
+// Re-export v0.3 matrix functions (DESIGN.md §9.2, §9.4)
+export { loadMcpMatrix, listKnownProjectDirs };
 
 // ── Transcript file discovery ─────────────────────────────────────────────────
 

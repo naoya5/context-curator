@@ -12,6 +12,10 @@ import { buildCostReport, appendHistory } from './report/cost.js';
 import { buildProposals, describeProposal } from './apply/proposals.js';
 import { archiveAsset } from './apply/archive.js';
 import { listArchives, restoreArchive } from './apply/restore.js';
+import { installSkill } from './apply/install-skill.js';
+import { loadMcpMatrix, listKnownProjectDirs } from './usage/index.js';
+import { buildMcpReport } from './report/mcp.js';
+import { buildHistoryReport } from './report/history.js';
 import type { Asset, AssetKind, FindingType, Proposal, UsageStats } from './types.js';
 
 const FINDING_TYPES: FindingType[] = ['stale', 'unused', 'bloated', 'zombie'];
@@ -21,16 +25,21 @@ const program = new Command();
 program
   .name('curator')
   .description('Claude context asset inventory and hygiene tool')
-  .version('0.2.0');
+  .version('0.3.0');
 
 // ─── scan ──────────────────────────────────────────────────────────────────
 program
   .command('scan')
   .description('Build and display asset inventory (full re-scan, no cache)')
+  .option('--all-projects', 'Include project-scoped assets from all known projects')
   .option('--json', 'Output as JSON')
-  .action(async (opts: { json?: boolean }) => {
+  .action(async (opts: { allProjects?: boolean; json?: boolean }) => {
     const paths = resolvePaths();
-    const inventory = await buildInventory(paths);
+    const projectDirs = opts.allProjects ? await listKnownProjectDirs(paths) : undefined;
+    const inventory = await buildInventory(paths, {
+      allProjects: opts.allProjects,
+      projectDirs,
+    });
 
     if (opts.json) {
       process.stdout.write(JSON.stringify(inventory, null, 2) + '\n');
@@ -157,14 +166,15 @@ program
 program
   .command('check')
   .description('Scan + usage + policy evaluation, output findings')
-  .option('--filter <type>', 'Filter by finding type (stale|unused|bloated|zombie)')
+  .option('--filter <type>', 'Filter by finding type (stale|unused|bloated|zombie|duplicate)')
+  .option('--all-projects', 'Include project-scoped assets from all known projects')
   .option('--json', 'Output as JSON')
-  .action(async (opts: { filter?: string; json?: boolean }) => {
+  .action(async (opts: { filter?: string; allProjects?: boolean; json?: boolean }) => {
     if (opts.filter && !FINDING_TYPES.includes(opts.filter as FindingType)) {
       console.error(pc.red(`--filter must be one of: ${FINDING_TYPES.join(', ')}`));
       process.exit(2);
     }
-    const findings = await runEvaluation();
+    const { findings } = await runEvaluation(opts.allProjects);
     const report = buildCheckReport(findings, {
       filter: opts.filter as FindingType | undefined,
       json: opts.json,
@@ -177,15 +187,30 @@ program
 program
   .command('cost')
   .description('Context health score report')
+  .option('--history', 'Show score history over time instead of a new report')
+  .option('--limit <n>', 'Max history entries to show (default 30)')
+  .option('--all-projects', 'Include project-scoped assets from all known projects')
   .option('--json', 'Output as JSON')
-  .action(async (opts: { json?: boolean }) => {
+  .action(async (opts: {
+    history?: boolean; limit?: string; allProjects?: boolean; json?: boolean;
+  }) => {
     const paths = resolvePaths();
-    const config = loadConfig(paths.curatorHome);
-    const inventory = await buildInventory(paths);
-    await updateLedger(paths);
-    const stats = await loadUsageStats(paths);
-    const findings = evaluate(inventory.assets, stats, config.policy, config.ignore);
-    const report = buildCostReport(inventory.assets, findings, {
+    if (opts.history) {
+      const limit = opts.limit ? Number(opts.limit) : undefined;
+      if (limit !== undefined && (!Number.isFinite(limit) || limit <= 0)) {
+        console.error(pc.red('--limit must be a positive number'));
+        process.exit(2);
+      }
+      const report = buildHistoryReport(paths.curatorHome, { limit, json: opts.json });
+      if (opts.json) {
+        process.stdout.write(JSON.stringify(report.json, null, 2) + '\n');
+      } else {
+        console.log(report.text);
+      }
+      return;
+    }
+    const { assets, findings } = await runEvaluation(opts.allProjects);
+    const report = buildCostReport(assets, findings, {
       json: opts.json,
       curatorHome: paths.curatorHome,
     });
@@ -226,7 +251,7 @@ program
       process.exit(2);
     }
     const paths = resolvePaths();
-    const findings = await runEvaluation();
+    const { findings } = await runEvaluation();
     const proposals = buildProposals(findings, {
       filter: opts.filter as FindingType | undefined,
       ids: opts.ids ? opts.ids.split(',').map((s) => s.trim()) : undefined,
@@ -341,14 +366,64 @@ program
     }
   });
 
-/** Shared pipeline for check: scan + ledger update + policy evaluation */
-async function runEvaluation() {
+// ─── mcp ───────────────────────────────────────────────────────────────────
+program
+  .command('mcp')
+  .description('Per-project MCP server usage matrix and active-set suggestions')
+  .option('--days <n>', 'Limit to last N days (default: all time)')
+  .option('--all', 'Show all projects (default: top 8 by event count)')
+  .option('--json', 'Output as JSON')
+  .action(async (opts: { days?: string; all?: boolean; json?: boolean }) => {
+    const days = opts.days ? Number(opts.days) : undefined;
+    if (days !== undefined && (!Number.isFinite(days) || days <= 0)) {
+      console.error(pc.red('--days must be a positive number'));
+      process.exit(2);
+    }
+    const paths = resolvePaths();
+    await updateLedger(paths);
+    const matrix = await loadMcpMatrix(paths, { days });
+    const inventory = await buildInventory(paths);
+    const report = buildMcpReport(matrix, inventory.assets, {
+      all: opts.all,
+      json: opts.json,
+    });
+    if (opts.json) {
+      process.stdout.write(JSON.stringify(report.json, null, 2) + '\n');
+    } else {
+      console.log(report.text);
+    }
+  });
+
+// ─── install-skill ─────────────────────────────────────────────────────────
+program
+  .command('install-skill')
+  .description('Install the /curator skill wrapper into ~/.claude/skills/curator/')
+  .option('--force', 'Overwrite an existing installation')
+  .action(async (opts: { force?: boolean }) => {
+    const paths = resolvePaths();
+    try {
+      const result = await installSkill(paths, { force: opts.force });
+      console.log(pc.green(`✓ installed: ${result.installedTo}`));
+      if (result.warning) console.log(pc.yellow(`  ⚠ ${result.warning}`));
+    } catch (e) {
+      console.error(pc.red(`✗ ${e instanceof Error ? e.message : String(e)}`));
+      process.exit(1);
+    }
+  });
+
+/** Shared pipeline: ledger update + scan + policy evaluation */
+async function runEvaluation(allProjects = false): Promise<{ assets: Asset[]; findings: ReturnType<typeof evaluate> }> {
   const paths = resolvePaths();
   const config = loadConfig(paths.curatorHome);
-  const inventory = await buildInventory(paths);
+  // ledger を先に更新 — all-projects のプロジェクト発見は ledger の cwd に依存する
   await updateLedger(paths);
+  const projectDirs = allProjects ? await listKnownProjectDirs(paths) : undefined;
+  const inventory = await buildInventory(paths, { allProjects, projectDirs });
   const stats = await loadUsageStats(paths);
-  return evaluate(inventory.assets, stats, config.policy, config.ignore);
+  return {
+    assets: inventory.assets,
+    findings: evaluate(inventory.assets, stats, config.policy, config.ignore),
+  };
 }
 
 await program.parseAsync(process.argv);

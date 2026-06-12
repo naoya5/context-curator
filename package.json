@@ -1,6 +1,6 @@
 {
   "name": "context-curator",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Claude context asset inventory and hygiene tool",
   "type": "module",
   "bin": {

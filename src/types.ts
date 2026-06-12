@@ -87,10 +87,31 @@ export interface ArchiveManifest {
   };
 }
 
-/** ~/.curator/journal.jsonl の1行。apply/restore の append-only 監査ログ */
+// ─── v0.3: MCP active-set matrix (DESIGN.md §9.2) ───────────────────────────
+
+/**
+ * Cross-project MCP usage matrix.
+ * servers: unique server names seen in events or global inventory
+ * projects: projects ordered by total event count (desc), top-8 by default
+ * counts: counts[server][cwd] = call count
+ */
+export interface McpMatrix {
+  /** All server names (global inventory servers + ledger-only servers) */
+  servers: string[];
+  /** Projects (cwds) with metadata, ordered by total desc */
+  projects: Array<{
+    cwd: string;
+    label: string;   // basename of cwd
+    total: number;   // total mcp-tool events across all servers in this project
+  }>;
+  /** counts[serverName][cwd] = number of calls */
+  counts: Record<string, Record<string, number>>;
+}
+
+/** ~/.curator/journal.jsonl の1行。apply/restore/install-skill の append-only 監査ログ */
 export interface JournalEntry {
   ts: string;
-  op: 'archive' | 'restore';
+  op: 'archive' | 'restore' | 'install-skill';
   archiveId: string;
   assetId: string;
   detail: string;
