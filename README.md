@@ -54,8 +54,14 @@ npm run build && npm link      # curator コマンドとして
 | `curator usage` | transcript ledger の更新 + 使用統計表示。`--days N` `--rebuild` |
 | `curator check` | scan + usage + ポリシー評価。`--filter stale\|unused\|bloated\|zombie` |
 | `curator cost` | Context Health Score レポート（実行ごとに `~/.curator/history.jsonl` へ記録） |
+| `curator apply` | 検出結果を1件ずつ承認してアーカイブ。`--dry-run` `--yes` `--ids` `--filter` |
+| `curator restore` | アーカイブ一覧 / `restore <archiveId>` で復元（衝突時は中止・上書きしない） |
 
 全コマンド `--json` 対応。`check` は high severity 検出時に exit 1（CI 組み込み用）。
+
+**apply の哲学: 絶対に消さない。** すべて `~/.curator/archive/` への移動で、いつでも戻せる。
+mcp-server は設定 JSON からのエントリ除去（編集前に必ず backup + atomic write）。
+plugin 由来の資産は提案対象外（プラグインを壊さない）。
 
 ## 仕組み
 
@@ -83,8 +89,8 @@ ignore:
 
 ## ロードマップ
 
-- v0.2: 承認制 archive（復元可能な片付け）/ 重複スキル検出 / `--all-projects`
-- v0.3: MCP active-set 提案 / `/curator` スキルラッパー / Health Score 時系列ダッシュボード
+- ~~v0.2: 承認制 archive（復元可能な片付け）/ 重複スキル検出~~ ✅ 完了
+- v0.3: MCP active-set 提案 / `/curator` スキルラッパー / Health Score 時系列ダッシュボード / `--all-projects`
 
 ## 開発
 
