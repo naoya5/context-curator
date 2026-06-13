@@ -13,6 +13,13 @@ export interface PolicyConfig {
   };
   /** Jaccard similarity threshold for duplicate skill detection (DESIGN.md §8.4) */
   duplicateThreshold: number;
+  /** memory lint 設定 (DESIGN.md §10.3) */
+  memoryLint: {
+    /** 本文中の ISO 日付の最大値がこの日数より過去なら old-date (デフォ 180) */
+    oldDateDays: number;
+    /** near-duplicate 判定の Jaccard 閾値 (デフォ 0.7) */
+    duplicateThreshold: number;
+  };
 }
 
 export interface CuratorConfig {
@@ -30,6 +37,10 @@ const DEFAULTS: CuratorConfig = {
       memoryFileTokens: 2000,
     },
     duplicateThreshold: 0.65,
+    memoryLint: {
+      oldDateDays: 180,
+      duplicateThreshold: 0.7,
+    },
   },
   ignore: [],
 };

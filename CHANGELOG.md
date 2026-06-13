@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.0 (2026-06-13)
+
+### Added
+- npm 公開準備 — `files` / `prepublishOnly` / LICENSE / `docs/PUBLISHING.md`（publish はユーザー操作）
+- `curator mcp --apply [--dry-run] [--yes]` — プロジェクト `.mcp.json` 定義サーバーのうち
+  未使用のものを、そのプロジェクトの `.claude/settings.json` の `disabledMcpjsonServers` へ
+  承認制で追記（backup + atomic write、journal 記録、グローバル定義サーバーは対象外）
+- memory 内容 lint — `[old-date]` `[broken-link]` `[index-mismatch]` `[near-duplicate]` の
+  静的検出を check に統合（`--filter lint`）。lint は archive 提案の対象外
+- `policy.memoryLint`（oldDateDays: 180 / duplicateThreshold: 0.7）
+
+### Fixed
+- `--filter duplicate` が v0.2 以降 CLI のバリデーションで弾かれていた問題
+
 ## 0.3.0 (2026-06-13)
 
 ### Added

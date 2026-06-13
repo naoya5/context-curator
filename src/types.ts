@@ -36,7 +36,10 @@ export interface UsageStats {
   projects: string[];
 }
 
-export type FindingType = 'stale' | 'unused' | 'bloated' | 'zombie' | 'duplicate';
+export type FindingType =
+  | 'stale' | 'unused' | 'bloated' | 'zombie' | 'duplicate'
+  /** memory 内容 lint（v0.4）。reason 先頭の [tag] で細分（old-date / broken-link / index-mismatch / near-duplicate）。apply 提案対象外 */
+  | 'lint';
 
 export interface Finding {
   asset: Asset;
@@ -108,11 +111,25 @@ export interface McpMatrix {
   counts: Record<string, Record<string, number>>;
 }
 
-/** ~/.curator/journal.jsonl の1行。apply/restore/install-skill の append-only 監査ログ */
+/** ~/.curator/journal.jsonl の1行。apply/restore/install-skill/mcp-disable の append-only 監査ログ */
 export interface JournalEntry {
   ts: string;
-  op: 'archive' | 'restore' | 'install-skill';
+  op: 'archive' | 'restore' | 'install-skill' | 'mcp-disable';
   archiveId: string;
   assetId: string;
   detail: string;
+}
+
+// ─── v0.4: mcp --apply（プロジェクト別 MCP 無効化、DESIGN.md §10.2） ─────────
+
+/** プロジェクト .mcp.json サーバーの無効化提案 */
+export interface McpDisableProposal {
+  /** 対象プロジェクトのルート（cwd） */
+  projectDir: string;
+  serverName: string;
+  /** server が定義されている .mcp.json の絶対パス */
+  mcpJsonPath: string;
+  /** 追記先 settings.json の絶対パス（不在なら新規作成） */
+  settingsPath: string;
+  reason: string;
 }

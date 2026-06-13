@@ -11,7 +11,7 @@ import type { Asset, Finding, UsageStats } from '../types.js';
  *   2. Lowercase
  *   3. Remove non-alphanumeric, non-CJK characters (keep spaces for tokenization)
  */
-function normalizeText(text: string): string {
+export function normalizeText(text: string): string {
   return text
     .normalize('NFKC')
     .toLowerCase()
@@ -39,7 +39,7 @@ function extractCjkBigrams(text: string): string[] {
  *   - ASCII words (from word boundary splitting)
  *   - CJK character bigrams
  */
-function tokenize(text: string): Set<string> {
+export function tokenize(text: string): Set<string> {
   const tokens = new Set<string>();
 
   // ASCII words
@@ -60,7 +60,7 @@ function tokenize(text: string): Set<string> {
  * Compute Jaccard similarity between two token sets.
  * Returns 0 if both sets are empty.
  */
-function jaccard(a: Set<string>, b: Set<string>): number {
+export function jaccard(a: Set<string>, b: Set<string>): number {
   if (a.size === 0 && b.size === 0) return 0;
 
   let intersectionSize = 0;

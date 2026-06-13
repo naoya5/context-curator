@@ -13,19 +13,21 @@ import { buildProposals, describeProposal } from './apply/proposals.js';
 import { archiveAsset } from './apply/archive.js';
 import { listArchives, restoreArchive } from './apply/restore.js';
 import { installSkill } from './apply/install-skill.js';
+import { buildMcpDisableProposals, applyMcpDisable } from './apply/mcp-disable.js';
 import { loadMcpMatrix, listKnownProjectDirs } from './usage/index.js';
 import { buildMcpReport } from './report/mcp.js';
 import { buildHistoryReport } from './report/history.js';
+import { lintMemories } from './policy/memory-lint.js';
 import type { Asset, AssetKind, FindingType, Proposal, UsageStats } from './types.js';
 
-const FINDING_TYPES: FindingType[] = ['stale', 'unused', 'bloated', 'zombie'];
+const FINDING_TYPES: FindingType[] = ['stale', 'unused', 'bloated', 'zombie', 'duplicate', 'lint'];
 
 const program = new Command();
 
 program
   .name('curator')
   .description('Claude context asset inventory and hygiene tool')
-  .version('0.3.0');
+  .version('0.4.0');
 
 // ─── scan ──────────────────────────────────────────────────────────────────
 program
@@ -372,8 +374,14 @@ program
   .description('Per-project MCP server usage matrix and active-set suggestions')
   .option('--days <n>', 'Limit to last N days (default: all time)')
   .option('--all', 'Show all projects (default: top 8 by event count)')
+  .option('--apply', 'Disable unused project-defined (.mcp.json) servers, with approval')
+  .option('--dry-run', 'With --apply: show what would change without writing')
+  .option('--yes', 'With --apply: approve all proposals without prompting')
   .option('--json', 'Output as JSON')
-  .action(async (opts: { days?: string; all?: boolean; json?: boolean }) => {
+  .action(async (opts: {
+    days?: string; all?: boolean; apply?: boolean;
+    dryRun?: boolean; yes?: boolean; json?: boolean;
+  }) => {
     const days = opts.days ? Number(opts.days) : undefined;
     if (days !== undefined && (!Number.isFinite(days) || days <= 0)) {
       console.error(pc.red('--days must be a positive number'));
@@ -382,6 +390,63 @@ program
     const paths = resolvePaths();
     await updateLedger(paths);
     const matrix = await loadMcpMatrix(paths, { days });
+
+    if (opts.apply || opts.dryRun) {
+      const projectDirs = await listKnownProjectDirs(paths);
+      const proposals = await buildMcpDisableProposals(matrix, projectDirs);
+      if (proposals.length === 0) {
+        console.log(pc.dim('無効化候補はありません（.mcp.json 定義済みで未使用のサーバーなし）。'));
+        return;
+      }
+      if (opts.dryRun) {
+        console.log(pc.bold(`\nDry run — ${proposals.length} 件の無効化候補（書き込みなし）\n`));
+        for (const p of proposals) {
+          console.log(`  ${pc.green(p.serverName.padEnd(28))} ${pc.dim(p.projectDir)}`);
+          console.log(pc.dim(`    理由: ${p.reason}`));
+          console.log(pc.dim(`    操作: ${p.settingsPath} の disabledMcpjsonServers に追記`));
+        }
+        return;
+      }
+      const approved: typeof proposals = [];
+      if (opts.yes) {
+        approved.push(...proposals);
+      } else {
+        const { createInterface } = await import('node:readline/promises');
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        try {
+          for (const p of proposals) {
+            console.log(`\n${pc.green(p.serverName)} ${pc.dim(`@ ${p.projectDir}`)}`);
+            console.log(pc.dim(`  理由: ${p.reason}`));
+            console.log(pc.dim(`  操作: ${p.settingsPath} の disabledMcpjsonServers に追記`));
+            const ans = (await rl.question('  無効化する? [y/n/q] ')).trim().toLowerCase();
+            if (ans === 'q') break;
+            if (ans === 'y') approved.push(p);
+          }
+        } finally {
+          rl.close();
+        }
+      }
+      let applied = 0;
+      const errors: string[] = [];
+      for (const p of approved) {
+        try {
+          await applyMcpDisable(paths, p);
+          applied++;
+          console.log(pc.green(`  ✓ disabled: ${p.serverName} @ ${p.projectDir}`));
+        } catch (e) {
+          errors.push(`${p.serverName} @ ${p.projectDir}: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+      console.log(
+        `\n${pc.bold('Summary')}  disabled: ${applied}  skipped: ${proposals.length - approved.length}` +
+        (errors.length ? pc.red(`  errors: ${errors.length}`) : ''),
+      );
+      for (const err of errors) console.error(pc.red(`  ✗ ${err}`));
+      console.log(pc.dim('元に戻すには settings.json の disabledMcpjsonServers から該当名を削除（backup あり）'));
+      if (errors.length > 0) process.exit(1);
+      return;
+    }
+
     const inventory = await buildInventory(paths);
     const report = buildMcpReport(matrix, inventory.assets, {
       all: opts.all,
@@ -420,10 +485,10 @@ async function runEvaluation(allProjects = false): Promise<{ assets: Asset[]; fi
   const projectDirs = allProjects ? await listKnownProjectDirs(paths) : undefined;
   const inventory = await buildInventory(paths, { allProjects, projectDirs });
   const stats = await loadUsageStats(paths);
-  return {
-    assets: inventory.assets,
-    findings: evaluate(inventory.assets, stats, config.policy, config.ignore),
-  };
+  const findings = evaluate(inventory.assets, stats, config.policy, config.ignore);
+  // memory 内容 lint は I/O を伴うため engine（純関数）の外で結合（DESIGN.md §10.3）
+  const lintFindings = await lintMemories(inventory.assets, config.policy);
+  return { assets: inventory.assets, findings: [...findings, ...lintFindings] };
 }
 
 await program.parseAsync(process.argv);

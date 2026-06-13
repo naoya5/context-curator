@@ -95,6 +95,61 @@ export async function insertMcpServer(
   await atomicWrite(configPath, JSON.stringify(obj, null, 2));
 }
 
+/**
+ * Generic helper: backup an existing JSON file (if present), mutate the parsed
+ * object via the provided callback, then atomic-write the result.
+ * If the file does not exist, a new file is created with the mutated value
+ * (no backup, because there is nothing to back up).
+ *
+ * Used by mcp-disable to append to disabledMcpjsonServers in settings.json.
+ *
+ * @param filePath   - Absolute path to the JSON file (may not exist)
+ * @param backupDir  - Directory for backups (created if needed)
+ * @param mutate     - Callback that receives the parsed object and mutates it in-place
+ */
+export async function safeEditJson(
+  filePath: string,
+  backupDir: string,
+  mutate: (obj: Record<string, unknown>) => void,
+): Promise<void> {
+  const fileDir = dirname(filePath);
+  await mkdir(fileDir, { recursive: true });
+
+  let obj: Record<string, unknown>;
+  let fileExists = false;
+
+  try {
+    const raw = await readFile(filePath, 'utf8');
+    fileExists = true;
+    try {
+      obj = JSON.parse(raw) as Record<string, unknown>;
+    } catch (err) {
+      throw new Error(
+        `JSON parse failed for ${filePath}: ${(err as Error).message}. Aborting to avoid corrupting config.`,
+      );
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      // File does not exist — start fresh
+      obj = {};
+    } else {
+      throw err;
+    }
+  }
+
+  if (fileExists) {
+    // Backup before mutation
+    await mkdir(backupDir, { recursive: true });
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupName = `${basename(filePath)}.${ts}.json`;
+    await copyFile(filePath, join(backupDir, backupName));
+  }
+
+  mutate(obj);
+
+  await atomicWrite(filePath, JSON.stringify(obj, null, 2));
+}
+
 /** Write content to a tmp file in the same directory, then rename atomically */
 async function atomicWrite(targetPath: string, content: string): Promise<void> {
   // tmp must be on same filesystem as target for rename to be atomic

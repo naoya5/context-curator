@@ -396,3 +396,63 @@ package.json を 0.2.0 に bump。CHANGELOG.md を新設。
 ### 9.6 バージョニング
 
 package.json / cli を 0.3.0 に bump。CHANGELOG 追記。
+
+---
+
+## 10. v0.4 — npm 公開準備 / mcp --apply / memory lint（2026-06-13 設計）
+
+### 10.1 npm 公開準備（publish 自体はユーザー操作）
+
+- package.json: `files: ["dist", "skill", "README.md", "CHANGELOG.md", "LICENSE"]`、
+  `repository` / `keywords`（claude-code, mcp, context, skills, cli 等）/ `license: "MIT"`、
+  `prepublishOnly: "npm run typecheck && npm run test && npm run build"`
+- LICENSE ファイル新設（MIT）
+- 検証: `npm run build` → `node dist/cli.js --version` 動作、`npm pack --dry-run` で同梱物確認、
+  tarball から install-skill の skill ソース解決（dist/apply/ → ../../skill/SKILL.md）が成立すること
+- `docs/PUBLISHING.md`: npm login → `npm publish --dry-run` → `npm publish` の手順と、
+  公開後の `npm i -g context-curator && curator install-skill` 動線
+- **`npm publish` は実行しない**（外向き公開はユーザーの操作領域）
+
+### 10.2 `curator mcp --apply` — 承認制のプロジェクト別 MCP 無効化
+
+- 対象: **プロジェクトの `.mcp.json` に定義されたサーバー**のうち、そのプロジェクトでの
+  使用が 0 のもの（ledger 全期間、`--days N` で窓指定可）。グローバル定義サーバーは対象外
+  （全プロジェクト未使用なら従来の `curator apply` の stale/unused 経路で archive する整理）
+- 操作: 対象プロジェクトの `.claude/settings.json` の `disabledMcpjsonServers` 配列に追記
+  - 既に含まれていればスキップ。settings.json 不在なら `{ "disabledMcpjsonServers": [...] }` で新規作成
+  - 既存ファイル編集時は claudejson.ts と同じ規約: パース失敗で中止 / backups/ にフルコピー /
+    tmp + rename の atomic write
+- UI: `curator mcp --apply [--days N] [--dry-run] [--yes]`。apply と同じ1件ずつ `[y/n/q]`
+- journal: op **'mcp-disable'** で記録（archiveId は `mcp-disable-<ts>` 形式の操作 id を流用）
+- 復元: backup + journal で手動復元可能であることを実行サマリに明示（restore コマンド統合はしない —
+  settings の配列1要素はユーザーが直接消せる粒度）
+- モジュール: `src/apply/mcp-disable.ts` — `buildMcpDisableProposals(matrix, projectDirs)` と
+  `applyMcpDisable(paths, proposal)`。`.mcp.json` の存在と server 定義の確認は実ファイルを読む
+
+### 10.3 memory lint（`src/policy/memory-lint.ts`）
+
+- FindingType に **'lint'** を1種追加（細分はせず reason 先頭の `[tag]` で区別）。
+  **lint は apply の提案対象外**（archive ではなく内容修正が正しい対処のため。PROPOSAL_TYPES に含めない）
+- 対象: kind === 'memory' の assets。ファイル I/O を伴うため engine.evaluate（純関数）には入れず、
+  独立した `lintMemories(assets, policy): Promise<Finding[]>` として cli 側で結合する
+- ルール（v0.4、すべて静的解析）:
+  | tag | 条件 | severity |
+  |---|---|---|
+  | `[old-date]` | 本文中の ISO 日付の最大値が memoryLint.oldDateDays（デフォ 180）超過去 | info |
+  | `[broken-link]` | `[[name]]` の参照先が同ディレクトリの .md（拡張子なし名 or frontmatter name）に不在 | warn |
+  | `[index-mismatch]` | MEMORY.md 内の (file.md) リンク切れ、または index に1度も参照されない .md がある | warn |
+  | `[near-duplicate]` | 同一ディレクトリ内 memory 本文の bigram Jaccard >= memoryLint.duplicateThreshold（0.7） | info |
+- config: `policy.memoryLint: { oldDateDays: 180, duplicateThreshold: 0.7 }`
+- 既知の限界（README に明記）: 意味的な矛盾・正確性は静的検出不能。LLM を使う lint は
+  /curator スキル経由の運用（Claude に check 結果と本文を読ませる）に委ね、CLI は候補提示に徹する
+
+### 10.4 テスト必須項目
+
+- packaging: pack 同梱物（dist/skill/LICENSE）、dist からの skill ソース解決
+- mcp-disable: .mcp.json 定義済み×未使用の提案 / グローバルサーバー非対象 / settings.json 新規作成・
+  既存追記・重複スキップ / backup 作成 / パース失敗中止 / dry-run 無書き込み
+- memory lint: 4 ルール各々の検出・非検出境界 / 壊れた frontmatter でクラッシュしない / しきい値反映
+
+### 10.5 バージョニング
+
+0.4.0 に bump。CHANGELOG 追記。
