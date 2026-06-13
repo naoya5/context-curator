@@ -56,7 +56,8 @@ npm run build && npm link      # curator コマンドとして
 | `curator cost` | Context Health Score レポート（実行ごとに `~/.curator/history.jsonl` へ記録） |
 | `curator apply` | 検出結果を1件ずつ承認してアーカイブ。`--dry-run` `--yes` `--ids` `--filter` |
 | `curator restore` | アーカイブ一覧 / `restore <archiveId>` で復元（衝突時は中止・上書きしない） |
-| `curator mcp` | プロジェクト × MCP サーバー使用マトリクスと無効化候補の提案（表示のみ） |
+| `curator mcp` | プロジェクト × MCP サーバー使用マトリクスと無効化候補の提案 |
+| `curator mcp --apply` | プロジェクト定義（.mcp.json）の未使用サーバーを承認制で無効化 |
 | `curator cost --history` | Health Score の時系列推移（スパークライン付き） |
 | `curator install-skill` | `/curator` スキルラッパーを `~/.claude/skills/curator/` にインストール |
 
@@ -96,7 +97,10 @@ ignore:
 
 - ~~v0.2: 承認制 archive（復元可能な片付け）/ 重複スキル検出~~ ✅ 完了
 - ~~v0.3: MCP active-set 提案 / `/curator` スキルラッパー / Health Score 時系列 / `--all-projects`~~ ✅ 完了
-- v0.4 候補: npm 公開 / MCP 無効化の承認制 apply 統合 / memory 内容 lint（古い事実・矛盾検出）
+- ~~v0.4: npm 公開準備 / mcp --apply / memory 内容 lint~~ ✅ 完了（publish 手順は [docs/PUBLISHING.md](docs/PUBLISHING.md)）
+
+memory lint の限界: 静的解析のため意味的な矛盾・正確性は検出できない。LLM による内容レビューは
+`/curator` スキル経由の運用（check 結果を Claude に読ませる）に委ね、CLI は候補提示に徹する。
 
 ## 開発
 
