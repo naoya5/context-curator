@@ -37,14 +37,47 @@ Claude Code を使い込むほど、skills・MCP サーバー・CLAUDE.md・memo
 が存在しなかった。context-curator はこの3つを核に、検出のその先 —
 資産の一生（作成 → 使用 → 陳腐化 → 整理）の管理を引き受ける。
 
-## インストール / 実行
+## インストール
 
 ```bash
-npm install
-npx tsx src/cli.ts <command>   # 開発実行
-# または
-npm run build && npm link      # curator コマンドとして
+# グローバルインストール（公開後）
+npm install -g context-curator
+
+# または開発版を直接
+git clone https://github.com/naoya5/context-curator.git
+cd context-curator && npm install && npm run build && npm link
 ```
+
+> 公開前のローカル開発では `npm install` 後に `npx tsx src/cli.ts <command>` で
+> 直接実行できる（ビルド不要）。以降の例の `curator` を `npx tsx src/cli.ts` に読み替え。
+
+## Getting Started
+
+最初の一巡り。すべて read-only なので安心して試せる。
+
+```bash
+# 1. 環境の健全性を一目で見る（初期コンテキストの何%が未使用資産か）
+curator cost
+
+# 2. 何が問題かを一覧する（stale / unused / bloated / duplicate / lint）
+curator check
+
+# 3. 片付け候補を「書き込みなし」で確認する
+curator apply --dry-run
+
+# 4. 納得したら1件ずつ承認してアーカイブ（消さずに ~/.curator/archive/ へ退避）
+curator apply
+
+# 5. 戻したくなったら
+curator restore                 # アーカイブ一覧
+curator restore <archiveId>     # 復元
+
+# 6. Claude Code から自然文で使えるようにする
+curator install-skill           # /curator スキルを ~/.claude/skills/ に導入
+```
+
+定期実行（cron / launchd）で `curator cost` を回すと、`curator cost --history` で
+健全性スコアの推移が見える。
 
 ## コマンド
 
@@ -52,7 +85,7 @@ npm run build && npm link      # curator コマンドとして
 |---|---|
 | `curator scan` | 資産台帳の構築・表示（フル再スキャン） |
 | `curator usage` | transcript ledger の更新 + 使用統計表示。`--days N` `--rebuild` |
-| `curator check` | scan + usage + ポリシー評価。`--filter stale\|unused\|bloated\|zombie` |
+| `curator check` | scan + usage + ポリシー評価 + memory lint。`--filter stale\|unused\|bloated\|zombie\|duplicate\|lint` |
 | `curator cost` | Context Health Score レポート（実行ごとに `~/.curator/history.jsonl` へ記録） |
 | `curator apply` | 検出結果を1件ずつ承認してアーカイブ。`--dry-run` `--yes` `--ids` `--filter` |
 | `curator restore` | アーカイブ一覧 / `restore <archiveId>` で復元（衝突時は中止・上書きしない） |
@@ -78,19 +111,33 @@ plugin 由来の資産は提案対象外（プラグインを壊さない）。
 
 ```yaml
 policy:
-  staleDays: 30
-  unusedGraceDays: 14
+  staleDays: 30           # 最終使用がこれより古い → stale
+  unusedGraceDays: 14     # 一度も使われず、作成からこの日数を超えたら → unused
+  duplicateThreshold: 0.65 # スキル重複判定の Jaccard 類似度しきい値
   bloat:
     claudeMdTokens: 3000
     skillFullTokens: 8000
     memoryFileTokens: 2000
+  memoryLint:
+    oldDateDays: 180      # 本文の最新日付がこれより古い → [old-date]
+    duplicateThreshold: 0.7 # memory 近似重複の Jaccard しきい値
 ignore:
-  - "skill:daily-commit"
+  - "skill:daily-commit"  # asset id（glob 可）。検出から除外
 ```
+
+全項目の詳細は [docs/CONFIG.md](docs/CONFIG.md)、コピー用テンプレートは
+[config.example.yaml](config.example.yaml) を参照。
 
 ## 安全性
 
-- **v0.1 は `~/.claude` に対して完全 read-only**。書き込みは `~/.curator/` のみ
+このツールはあなたの Claude Code 環境を直接さわる。だから安全モデルを明示する。
+
+- **分析系（`scan` / `usage` / `check` / `cost` / `mcp`）は `~/.claude` に対して read-only。** これらが書き込むのは `~/.curator/`（ledger・履歴）だけ
+- **書き込みを伴うのは承認済み操作だけ**：`apply`（アーカイブ）・`restore`（復元）・`mcp --apply`（プロジェクトの MCP 無効化）・`install-skill`。いずれも対話承認または明示フラグが要る
+- **絶対に削除しない。** すべて `~/.curator/archive/` への移動で、`curator restore` でいつでも戻せる（クロスデバイス移動の fallback 1箇所を除き、コードベースに削除呼び出しは存在しない）
+- **設定 JSON を編集する前に必ず backup。** `~/.claude.json` や project の `settings.json` をいじる前に `~/.curator/backups/` にフルコピーを取り、tmp ファイル + rename の atomic write で書き換える。パース失敗時は何も触らず中止する
+- **すべての変更操作は `~/.curator/journal.jsonl` に追記記録**（append-only の監査ログ）
+- **plugin 由来の資産は提案対象外**（プラグインを壊さない）
 - トークン数は `~` 付きの推定値。MCP server の footprint は偽精度を避けて unknown 表示
 
 ## ロードマップ
@@ -105,7 +152,7 @@ memory lint の限界: 静的解析のため意味的な矛盾・正確性は検
 ## 開発
 
 ```bash
-npx tsc --noEmit && npx vitest run   # 型チェック + テスト（134 tests）
+npx tsc --noEmit && npx vitest run   # 型チェック + テスト（255 tests）
 ```
 
 設計書: [docs/DESIGN.md](docs/DESIGN.md)

@@ -1,0 +1,37 @@
+# context-curator 設定ファイルのサンプル
+#
+# このファイルを ~/.curator/config.yaml にコピーして編集すると設定が反映される。
+# 設定ファイルが無い場合・パースに失敗した場合は、ここに書かれたデフォルト値が使われる。
+# 一部のキーだけ書いた場合、残りはデフォルトで補完される（deep merge）。
+#
+# 全項目の詳細な説明: docs/CONFIG.md
+
+policy:
+  # 最終使用日がこの日数より古い資産を stale とする
+  staleDays: 30
+
+  # 一度も使われた記録がなく、作成からこの日数を超えた資産を unused とする
+  # （新しく作ったばかりの資産を誤検出しないための猶予期間）
+  unusedGraceDays: 14
+
+  # スキル重複検出の Jaccard 類似度しきい値（0.0〜1.0）
+  # name + description の bigram 集合で比較。高くすると「ほぼ完全一致」のみ検出
+  duplicateThreshold: 0.65
+
+  # 肥大（bloated）と判定するトークン数のしきい値
+  bloat:
+    claudeMdTokens: 3000    # CLAUDE.md / rules ファイル
+    skillFullTokens: 8000   # スキル全文（SKILL.md + 付随ファイル）
+    memoryFileTokens: 2000  # 個別 memory ファイル
+
+  # memory 内容 lint の設定
+  memoryLint:
+    oldDateDays: 180        # 本文中の最新 ISO 日付がこれより古いと [old-date]
+    duplicateThreshold: 0.7 # 同一ディレクトリ内 memory の近似重複しきい値
+
+# 検出から除外する asset id のリスト（glob パターン可、`*` のみ対応）
+# asset id の形式: "<kind>:<name>" 例 "skill:daily-commit" / "mcp-server:voisona"
+ignore:
+  - "skill:daily-commit"
+  # - "command:*"          # 全コマンドを除外する例
+  # - "mcp-server:voisona" # 特定 MCP サーバーを除外する例

@@ -22,13 +22,13 @@ npm login
 npm whoami   # ユーザー名が表示されれば OK
 ```
 
-### 2. バージョン bump（統合担当が行う）
+### 2. バージョン bump
 
 ```bash
 # patch / minor / major を適宜選択
-npm version patch   # 例: 0.3.0 → 0.3.1
-npm version minor   # 例: 0.3.0 → 0.4.0
-npm version major   # 例: 0.3.0 → 1.0.0
+npm version patch   # 例: 0.4.0 → 0.4.1
+npm version minor   # 例: 0.4.0 → 0.5.0
+npm version major   # 例: 0.4.0 → 1.0.0
 ```
 
 バージョン bump 後は `CHANGELOG.md` を更新してコミットする。
@@ -52,7 +52,7 @@ npm publish --dry-run
 
 ```
 npm run typecheck   # TypeScript 型チェック
-npm run test        # 214 tests
+npm run test        # 255 tests
 npm run build       # tsc → dist/
 ```
 
@@ -74,7 +74,7 @@ npm publish
 
 ```bash
 npm install -g context-curator
-curator --version   # 0.3.x が表示されること
+curator --version   # 0.4.x が表示されること
 ```
 
 ### スキルのインストール

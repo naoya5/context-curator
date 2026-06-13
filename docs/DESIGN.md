@@ -12,6 +12,8 @@ skills / MCP servers / CLAUDE.md / memory / commands / agents を台帳化し、
 - パッケージ名: `context-curator`、CLI バイナリ名: `curator`
 - TypeScript / Node.js >= 20 / ESM / 実行時依存は最小限（目標: `commander` + `yaml` + `picocolors` 程度。テストは `vitest`）
 - **v0.1 は ~/.claude 等に対して完全 read-only**。書き込みは自前ディレクトリ `~/.curator/` のみ
+  - → v0.2 以降は承認済み操作（apply / restore / mcp --apply / install-skill）に限り ~/.claude へ書き込む。
+    改訂後の安全モデルは §7 と README「安全性」を参照（分析系は引き続き read-only）
 
 ### ポジショニングと差別化（競合調査 2026-06-11 より）
 
