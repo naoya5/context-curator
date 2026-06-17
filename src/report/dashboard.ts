@@ -1,4 +1,11 @@
 // dashboard.ts — `curator dashboard` HTML report (DESIGN.md §11)
+//
+// Aesthetic: "Engineering Telemetry / instrument panel".
+// Monospace-forward (offline-safe, on-theme for a CLI), near-monochrome ink
+// ground with green/amber/red as the only chroma, blueprint grid, registration
+// marks, CSS-only load choreography. Fully self-contained: no external
+// CDN/font/network resources; charts are hand-drawn inline SVG; every dynamic
+// string is HTML-escaped; no <script> tag (no JS, no XSS vector).
 import type { Finding, FindingType } from '../types.js';
 
 // ---------------------------------------------------------------------------
@@ -40,7 +47,6 @@ export function buildDashboardData(input: {
   projectDir: string;
   generatedAt: string;
 }): DashboardData {
-  // Aggregate findingCountsByType
   const findingCountsByType: Record<string, number> = {};
   for (const f of input.findings) {
     findingCountsByType[f.type] = (findingCountsByType[f.type] ?? 0) + 1;
@@ -70,7 +76,7 @@ export function buildDashboardData(input: {
 }
 
 // ---------------------------------------------------------------------------
-// HTML escape utility (DESIGN.md §11.2)
+// HTML escape (DESIGN.md §11.2) — applied to EVERY dynamic string
 // ---------------------------------------------------------------------------
 function esc(s: string): string {
   return s
@@ -81,123 +87,136 @@ function esc(s: string): string {
     .replace(/'/g, '&#39;');
 }
 
-// ---------------------------------------------------------------------------
-// Token formatting helper
-// ---------------------------------------------------------------------------
 function fmtTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
   return String(n);
 }
 
-// ---------------------------------------------------------------------------
-// Score color class (DESIGN.md §11.4)
-// ---------------------------------------------------------------------------
+// Score → semantic color class (tests rely on score-green/yellow/red names)
 function scoreColorClass(score: number): string {
   if (score >= 80) return 'score-green';
   if (score >= 50) return 'score-yellow';
   return 'score-red';
 }
 
+const SEMANTIC: Record<string, string> = {
+  'score-green': '#4cc38a',
+  'score-yellow': '#e0a93b',
+  'score-red': '#f0695d',
+};
+
+function statusLabel(score: number): { text: string; cls: string } {
+  if (score >= 80) return { text: 'NOMINAL', cls: 'score-green' };
+  if (score >= 50) return { text: 'DEGRADED', cls: 'score-yellow' };
+  return { text: 'CRITICAL', cls: 'score-red' };
+}
+
 // ---------------------------------------------------------------------------
-// Inline SVG donut gauge
+// Inline SVG instrument dial (donut gauge with tick ring + sweep animation)
 // ---------------------------------------------------------------------------
 function renderDonutGauge(score: number): string {
-  const r = 54;
-  const cx = 64;
-  const cy = 64;
-  const circumference = 2 * Math.PI * r;
-  const filled = circumference * (score / 100);
-  const empty = circumference - filled;
-  const colorClass = scoreColorClass(score);
-  const strokeColor = colorClass === 'score-green'
-    ? '#4ade80'
-    : colorClass === 'score-yellow'
-    ? '#facc15'
-    : '#f87171';
+  const cx = 80;
+  const cy = 80;
+  const r = 62;
+  const CIRC = 2 * Math.PI * r; // constant (r fixed) — matches keyframe `from`
+  const pct = Math.max(0, Math.min(100, score)) / 100;
+  const offset = CIRC * (1 - pct); // final stroke-dashoffset
+  const cls = scoreColorClass(score);
+  const color = SEMANTIC[cls]!;
 
-  return `<svg viewBox="0 0 128 128" width="128" height="128" aria-label="Score ${score}/100">
-  <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="#334155" stroke-width="14"/>
-  <circle cx="${cx}" cy="${cy}" r="${r}" fill="none"
-    stroke="${strokeColor}" stroke-width="14"
-    stroke-dasharray="${filled.toFixed(2)} ${empty.toFixed(2)}"
-    stroke-linecap="round"
-    transform="rotate(-90 ${cx} ${cy})"/>
-  <text x="${cx}" y="${cy + 6}" text-anchor="middle" font-size="22" font-weight="bold"
-    fill="${strokeColor}" font-family="monospace">${score}</text>
+  // Instrument tick ring: 60 ticks, every 5th major
+  const ticks: string[] = [];
+  for (let i = 0; i < 60; i++) {
+    const ang = (i / 60) * 2 * Math.PI - Math.PI / 2;
+    const major = i % 5 === 0;
+    const r1 = major ? r + 10 : r + 12;
+    const r2 = major ? r + 16 : r + 15;
+    const x1 = (cx + Math.cos(ang) * r1).toFixed(1);
+    const y1 = (cy + Math.sin(ang) * r1).toFixed(1);
+    const x2 = (cx + Math.cos(ang) * r2).toFixed(1);
+    const y2 = (cy + Math.sin(ang) * r2).toFixed(1);
+    ticks.push(
+      `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${major ? '#4a5a66' : '#2a343d'}" stroke-width="${major ? 1.4 : 1}"/>`,
+    );
+  }
+
+  return `<svg viewBox="0 0 160 160" width="180" height="180" class="gauge" role="img" aria-label="Health score ${score} of 100">
+  <g class="gauge-ticks">${ticks.join('')}</g>
+  <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="#1b232b" stroke-width="7"/>
+  <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${color}" stroke-width="7"
+    stroke-linecap="round" stroke-dasharray="${CIRC.toFixed(2)}"
+    class="gauge-arc" transform="rotate(-90 ${cx} ${cy})"
+    style="--final:${offset.toFixed(2)};filter:drop-shadow(0 0 6px ${color}99)"/>
+  <text x="${cx}" y="${cy + 4}" text-anchor="middle" class="gauge-cap" fill="#5b6975">HEALTH</text>
 </svg>`;
 }
 
 // ---------------------------------------------------------------------------
-// Inline SVG line chart for history
+// Inline SVG history line chart (area fill + glow line + draw-in)
 // ---------------------------------------------------------------------------
 function renderHistoryChart(
   history: Array<{ date: string; score: number }>,
 ): string {
   if (history.length === 0) {
-    return '<p class="no-data">履歴なし</p>';
+    return '<p class="no-data">履歴なし — <code>curator cost</code> を回すと記録されます</p>';
   }
 
-  const W = 480;
-  const H = 100;
-  const PAD_L = 36;
-  const PAD_R = 12;
-  const PAD_T = 12;
-  const PAD_B = 24;
+  const W = 520;
+  const H = 150;
+  const PAD_L = 32;
+  const PAD_R = 14;
+  const PAD_T = 16;
+  const PAD_B = 26;
   const innerW = W - PAD_L - PAD_R;
   const innerH = H - PAD_T - PAD_B;
-
-  // Map each point to SVG coordinates
   const n = history.length;
-  const points = history.map((h, i) => {
-    const x = n === 1
-      ? PAD_L + innerW / 2
-      : PAD_L + (i / (n - 1)) * innerW;
+
+  const pts = history.map((h, i) => {
+    const x = n === 1 ? PAD_L + innerW / 2 : PAD_L + (i / (n - 1)) * innerW;
     const y = PAD_T + innerH - (Math.max(0, Math.min(100, h.score)) / 100) * innerH;
     return { x, y, date: h.date, score: h.score };
   });
 
-  const polylinePoints = points.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+  const linePoints = pts.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+  const baselineY = PAD_T + innerH;
+  const areaPoints = `${pts[0]!.x.toFixed(1)},${baselineY} ${linePoints} ${pts[n - 1]!.x.toFixed(1)},${baselineY}`;
 
-  // Score axis labels
-  const axisLines = [0, 50, 100].map((v) => {
+  const gridLines = [0, 50, 100].map((v) => {
     const y = PAD_T + innerH - (v / 100) * innerH;
-    return `<line x1="${PAD_L}" y1="${y.toFixed(1)}" x2="${W - PAD_R}" y2="${y.toFixed(1)}"
-      stroke="#334155" stroke-width="1" stroke-dasharray="2 2"/>
-    <text x="${(PAD_L - 4).toFixed(0)}" y="${(y + 4).toFixed(1)}" text-anchor="end"
-      font-size="9" fill="#94a3b8">${v}</text>`;
+    return `<line x1="${PAD_L}" y1="${y.toFixed(1)}" x2="${W - PAD_R}" y2="${y.toFixed(1)}" stroke="#1d2630" stroke-width="1" stroke-dasharray="1 4"/>
+    <text x="${(PAD_L - 6).toFixed(0)}" y="${(y + 3).toFixed(1)}" text-anchor="end" class="ax">${v}</text>`;
   });
 
-  // Dots
-  const dots = points.map((p) => {
-    const col = p.score >= 80 ? '#4ade80' : p.score >= 50 ? '#facc15' : '#f87171';
-    return `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="3"
-      fill="${col}" stroke="#1e293b" stroke-width="1">
-      <title>${esc(p.date)}: ${p.score}</title>
-    </circle>`;
+  const dots = pts.map((p) => {
+    const cls = scoreColorClass(p.score);
+    const col = SEMANTIC[cls]!;
+    return `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="3.4" fill="#0a0f14" stroke="${col}" stroke-width="2" style="filter:drop-shadow(0 0 4px ${col}aa)"><title>${esc(p.date)} · ${p.score}</title></circle>`;
   });
 
-  // Date labels (first + last)
-  const dateLabelFirst = `<text x="${points[0]!.x.toFixed(1)}" y="${H}" text-anchor="start"
-    font-size="9" fill="#64748b">${esc(points[0]!.date)}</text>`;
-  const dateLabelLast = n > 1
-    ? `<text x="${points[n - 1]!.x.toFixed(1)}" y="${H}" text-anchor="end"
-    font-size="9" fill="#64748b">${esc(points[n - 1]!.date)}</text>`
+  const firstLabel = `<text x="${pts[0]!.x.toFixed(1)}" y="${H - 6}" text-anchor="${n === 1 ? 'middle' : 'start'}" class="ax">${esc(pts[0]!.date)}</text>`;
+  const lastLabel = n > 1
+    ? `<text x="${pts[n - 1]!.x.toFixed(1)}" y="${H - 6}" text-anchor="end" class="ax">${esc(pts[n - 1]!.date)}</text>`
     : '';
 
-  return `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}"
-    style="max-width:100%;display:block;" aria-label="Score history chart">
-  ${axisLines.join('\n  ')}
-  <polyline points="${polylinePoints}"
-    fill="none" stroke="#6366f1" stroke-width="2" stroke-linejoin="round"/>
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="xMidYMid meet" class="hist" role="img" aria-label="Score history">
+  <defs>
+    <linearGradient id="histArea" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#39c7d8" stop-opacity="0.28"/>
+      <stop offset="100%" stop-color="#39c7d8" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  ${gridLines.join('\n  ')}
+  <polygon points="${areaPoints}" fill="url(#histArea)" class="hist-area"/>
+  <polyline points="${linePoints}" fill="none" stroke="#56d6e6" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" class="hist-line" style="filter:drop-shadow(0 0 5px #56d6e688)"/>
   ${dots.join('\n  ')}
-  ${dateLabelFirst}
-  ${dateLabelLast}
+  ${firstLabel}
+  ${lastLabel}
 </svg>`;
 }
 
 // ---------------------------------------------------------------------------
-// Inventory horizontal bar chart
+// Inventory — instrument readout rows with grow-in bars
 // ---------------------------------------------------------------------------
 function renderInventoryBars(
   byKind: Array<{ label: string; count: number; tokens: number | null }>,
@@ -205,44 +224,37 @@ function renderInventoryBars(
 ): string {
   if (byKind.length === 0) return '<p class="no-data">資産なし</p>';
 
-  const rows = byKind.map((k) => {
-    const tokenStr = k.tokens === null ? 'unknown' : fmtTokens(k.tokens);
-    const pct = (k.tokens !== null && totalTokens > 0)
-      ? Math.max(2, Math.round((k.tokens / totalTokens) * 100))
-      : 0;
-    const barWidth = k.tokens !== null && totalTokens > 0 ? pct : 0;
+  const maxTokens = Math.max(
+    1,
+    ...byKind.map((k) => (k.tokens !== null ? k.tokens : 0)),
+  );
 
-    return `<tr>
-      <td class="inv-label">${esc(k.label)}</td>
-      <td class="inv-bar-cell">
-        <div class="inv-bar-wrap">
-          <div class="inv-bar" style="width:${barWidth}%"></div>
-        </div>
-      </td>
-      <td class="inv-tokens">${esc(tokenStr)}</td>
-      <td class="inv-count">${k.count}</td>
-    </tr>`;
+  const rows = byKind.map((k, i) => {
+    const isUnknown = k.tokens === null;
+    const tokenStr = isUnknown ? 'unknown' : fmtTokens(k.tokens!);
+    const w = isUnknown ? 0 : Math.max(2, Math.round((k.tokens! / maxTokens) * 100));
+    const delay = (0.05 * i + 0.5).toFixed(2);
+    return `<div class="inv-row">
+      <div class="inv-label">${esc(k.label)}</div>
+      <div class="inv-track">
+        <div class="inv-fill${isUnknown ? ' inv-unknown' : ''}" style="--w:${w}%;animation-delay:${delay}s"></div>
+      </div>
+      <div class="inv-tok${isUnknown ? ' dim' : ''}">${esc(tokenStr)}</div>
+      <div class="inv-cnt">${k.count}<span class="unit">×</span></div>
+    </div>`;
   });
 
-  return `<table class="inv-table">
-    <thead><tr>
-      <th>種別</th><th>トークン比率</th><th>tokens</th><th>件数</th>
-    </tr></thead>
-    <tbody>${rows.join('\n')}</tbody>
-  </table>`;
+  return `<div class="inv">${rows.join('\n')}</div>`;
 }
 
 // ---------------------------------------------------------------------------
-// Findings section
+// Findings — console log grouped by type with LED severity indicators
 // ---------------------------------------------------------------------------
-function renderFindings(
-  findings: DashboardData['findings'],
-): string {
+function renderFindings(findings: DashboardData['findings']): string {
   if (findings.length === 0) {
-    return '<p class="no-data">Findings なし</p>';
+    return '<p class="no-data ok">Findings なし — クリーンな状態です ✓</p>';
   }
 
-  // Group by type
   const groups = new Map<FindingType, typeof findings>();
   for (const f of findings) {
     if (!groups.has(f.type)) groups.set(f.type, []);
@@ -250,87 +262,184 @@ function renderFindings(
   }
 
   const ORDER: FindingType[] = ['zombie', 'stale', 'unused', 'bloated', 'duplicate', 'lint'];
-  const html: string[] = [];
+  const blocks: string[] = [];
 
   for (const type of ORDER) {
     const group = groups.get(type);
     if (!group || group.length === 0) continue;
 
-    const rows = group.map((f) => {
-      const sevClass = `sev-${f.severity}`;
-      return `<tr>
-        <td><span class="badge ${sevClass}">${esc(f.severity)}</span></td>
-        <td>${esc(f.kind)}</td>
-        <td class="finding-name">${esc(f.name)}</td>
-        <td class="finding-reason">${esc(f.reason)}</td>
-      </tr>`;
-    });
+    const rows = group.map((f) => `<li class="frow">
+        <span class="led sev-${esc(f.severity)}" aria-hidden="true"></span>
+        <span class="fsev sev-${esc(f.severity)}">${esc(f.severity)}</span>
+        <span class="fkind">${esc(f.kind)}</span>
+        <span class="fname">${esc(f.name)}</span>
+        <span class="freason">${esc(f.reason)}</span>
+      </li>`);
 
-    html.push(`<div class="finding-group">
-      <h3 class="finding-type-header">${esc(type)} <span class="badge-count">${group.length}</span></h3>
-      <table class="findings-table">
-        <thead><tr><th>severity</th><th>kind</th><th>name</th><th>reason</th></tr></thead>
-        <tbody>${rows.join('\n')}</tbody>
-      </table>
+    blocks.push(`<div class="fgroup">
+      <div class="fhead"><span class="ftype">${esc(type)}</span><span class="fcount">${group.length}</span><span class="frule"></span></div>
+      <ul class="flist">${rows.join('\n')}</ul>
     </div>`);
   }
 
-  return html.join('\n');
+  return blocks.join('\n');
 }
 
 // ---------------------------------------------------------------------------
-// CSS styles (inline, dark theme)
+// CSS — engineering telemetry theme (inline, self-contained)
 // ---------------------------------------------------------------------------
 function buildStyles(): string {
   return `<style>
+:root{
+  --ink:#0a0f14; --panel:rgba(255,255,255,.018); --line:rgba(125,150,170,.14);
+  --line-soft:rgba(125,150,170,.07); --tx:#cdd6e0; --dim:#7c8a99; --faint:#46525f;
+  --cyan:#56d6e6; --green:#4cc38a; --amber:#e0a93b; --red:#f0695d;
+  --mono:"SF Mono","JetBrains Mono","Fira Code",ui-monospace,Menlo,Consolas,monospace;
+  --jp:"Hiragino Kaku Gothic ProN","Hiragino Sans","Noto Sans JP",sans-serif;
+}
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,monospace;
-  background:#0f172a;color:#e2e8f0;font-size:14px;line-height:1.5;padding:24px}
-h1{font-size:1.4rem;color:#f8fafc;font-weight:700;margin-bottom:4px}
-h2{font-size:1.1rem;color:#94a3b8;font-weight:600;margin:0 0 12px 0;
-  border-bottom:1px solid #1e293b;padding-bottom:6px}
-h3.finding-type-header{font-size:.95rem;color:#cbd5e1;font-weight:600;
-  margin:16px 0 8px 0;text-transform:uppercase;letter-spacing:.05em}
-.subtitle{color:#64748b;font-size:.85rem;margin-bottom:24px}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;margin-bottom:24px}
-.card{background:#1e293b;border:1px solid #334155;border-radius:8px;padding:20px}
-.score-section{display:flex;align-items:center;gap:20px}
-.score-num{font-size:3rem;font-weight:800;line-height:1}
-.score-green{color:#4ade80}.score-yellow{color:#facc15}.score-red{color:#f87171}
-.score-label{font-size:.8rem;color:#64748b;margin-top:4px}
-.score-sub{font-size:.85rem;color:#94a3b8;margin-top:8px}
-.stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px}
-.stat-item{background:#0f172a;border-radius:6px;padding:10px}
-.stat-val{font-size:1.3rem;font-weight:700;color:#f8fafc}
-.stat-key{font-size:.75rem;color:#64748b;margin-top:2px}
-.chart-wrap{overflow-x:auto}
-.inv-table{width:100%;border-collapse:collapse}
-.inv-table th{text-align:left;color:#64748b;font-size:.75rem;font-weight:500;
-  padding:4px 8px;border-bottom:1px solid #334155}
-.inv-label{padding:6px 8px;color:#e2e8f0;white-space:nowrap}
-.inv-bar-cell{padding:6px 8px;width:50%}
-.inv-bar-wrap{background:#0f172a;border-radius:4px;height:14px;overflow:hidden}
-.inv-bar{background:#6366f1;height:100%;border-radius:4px;transition:width .3s}
-.inv-tokens{padding:6px 8px;color:#94a3b8;font-size:.8rem;text-align:right;white-space:nowrap}
-.inv-count{padding:6px 8px;color:#64748b;font-size:.8rem;text-align:right}
-.findings-table{width:100%;border-collapse:collapse;font-size:.85rem}
-.findings-table th{text-align:left;color:#64748b;font-size:.75rem;font-weight:500;
-  padding:4px 8px;border-bottom:1px solid #334155}
-.findings-table td{padding:5px 8px;border-bottom:1px solid #1e293b;vertical-align:top}
-.finding-name{color:#cbd5e1;font-family:monospace;font-size:.8rem}
-.finding-reason{color:#94a3b8;font-size:.8rem}
-.finding-group{margin-bottom:16px}
-.badge{display:inline-block;border-radius:4px;padding:1px 6px;
-  font-size:.72rem;font-weight:600;text-transform:uppercase}
-.sev-high{background:#450a0a;color:#f87171;border:1px solid #991b1b}
-.sev-warn{background:#451a03;color:#facc15;border:1px solid #92400e}
-.sev-info{background:#0c1a3a;color:#60a5fa;border:1px solid #1e40af}
-.badge-count{display:inline-block;background:#334155;color:#94a3b8;
-  border-radius:12px;padding:0 8px;font-size:.8rem;font-weight:400;margin-left:6px}
-.no-data{color:#475569;font-style:italic;padding:12px 0}
-footer{margin-top:32px;padding-top:16px;border-top:1px solid #1e293b;
-  color:#475569;font-size:.78rem}
-footer strong{color:#64748b}
+html{-webkit-font-smoothing:antialiased}
+body{
+  font-family:var(--mono),var(--jp);color:var(--tx);font-size:13px;line-height:1.55;
+  background:
+    radial-gradient(120% 80% at 50% -10%,#11181f 0%,var(--ink) 55%,#05080b 100%),
+    var(--ink);
+  min-height:100vh;padding:38px 30px 60px;position:relative;overflow-x:hidden;
+}
+/* blueprint grid */
+body::before{
+  content:"";position:fixed;inset:0;z-index:0;pointer-events:none;
+  background-image:
+    linear-gradient(var(--line-soft) 1px,transparent 1px),
+    linear-gradient(90deg,var(--line-soft) 1px,transparent 1px);
+  background-size:30px 30px;
+  -webkit-mask-image:radial-gradient(130% 90% at 50% 0%,#000 40%,transparent 92%);
+          mask-image:radial-gradient(130% 90% at 50% 0%,#000 40%,transparent 92%);
+}
+.wrap{position:relative;z-index:1;max-width:1080px;margin:0 auto}
+/* registration / crop marks */
+.reg{position:fixed;width:14px;height:14px;z-index:2;pointer-events:none;opacity:.5}
+.reg::before,.reg::after{content:"";position:absolute;background:var(--cyan);opacity:.6}
+.reg::before{width:14px;height:1px;top:6px}.reg::after{height:14px;width:1px;left:6px}
+.reg.tl{top:14px;left:14px}.reg.tr{top:14px;right:14px}
+.reg.bl{bottom:14px;left:14px}.reg.br{bottom:14px;right:14px}
+
+/* header */
+header{margin-bottom:26px;opacity:0;animation:rise .6s ease .05s forwards}
+.brand{font-size:1.55rem;font-weight:700;letter-spacing:.02em;color:#eef3f7}
+.brand b{color:var(--cyan);font-weight:700}
+.brand .dim{color:var(--faint);font-weight:400}
+.readout{display:flex;flex-wrap:wrap;gap:6px 22px;margin-top:12px;
+  font-size:.72rem;letter-spacing:.08em;align-items:center}
+.rd{display:flex;gap:7px;align-items:baseline}
+.rd .k{color:var(--faint);text-transform:uppercase}
+.rd .v{color:var(--dim)}
+.status{margin-left:auto;display:inline-flex;align-items:center;gap:7px;
+  text-transform:uppercase;font-weight:700;letter-spacing:.14em;font-size:.72rem;
+  padding:4px 11px;border:1px solid var(--line);border-radius:2px;background:rgba(0,0,0,.25)}
+.status .dot{width:7px;height:7px;border-radius:50%;background:currentColor;
+  box-shadow:0 0 7px currentColor;animation:pulse 2.4s ease-in-out infinite}
+
+/* layout */
+.grid{display:grid;grid-template-columns:minmax(280px,360px) 1fr;gap:14px;margin-bottom:14px}
+@media(max-width:760px){.grid{grid-template-columns:1fr}}
+.panel{position:relative;background:var(--panel);border:1px solid var(--line);
+  border-radius:3px;padding:18px 20px;opacity:0;animation:rise .6s ease forwards}
+.panel::before{content:"";position:absolute;top:-1px;left:14px;width:26px;height:2px;background:var(--cyan);opacity:.55}
+.grid .panel:nth-child(1){animation-delay:.12s}
+.grid .panel:nth-child(2){animation-delay:.20s}
+.panel.full{animation-delay:.28s;margin-bottom:14px}
+.panel.find{animation-delay:.36s}
+.eyebrow{font-size:.68rem;letter-spacing:.18em;text-transform:uppercase;color:var(--faint);
+  margin-bottom:14px;display:flex;align-items:center;gap:9px}
+.eyebrow::after{content:"";flex:1;height:1px;background:var(--line-soft)}
+
+/* gauge panel */
+.gauge-wrap{display:flex;flex-direction:column;align-items:center;gap:14px}
+.gauge{display:block;margin-top:-6px}
+.gauge-cap{font-family:var(--mono);font-size:9px;letter-spacing:.34em}
+.gauge-arc{animation:sweep 1.3s cubic-bezier(.4,0,.2,1) .25s both}
+.score-line{display:flex;align-items:baseline;gap:8px;justify-content:center;margin-top:-4px}
+.score-num{font-size:2.9rem;font-weight:700;line-height:1;letter-spacing:-.02em}
+.score-den{color:var(--faint);font-size:.85rem}
+.score-green{color:var(--green)}.score-yellow{color:var(--amber)}.score-red{color:var(--red)}
+.score-num.score-green{text-shadow:0 0 22px #4cc38a55}
+.score-num.score-yellow{text-shadow:0 0 22px #e0a93b55}
+.score-num.score-red{text-shadow:0 0 22px #f0695d55}
+.telemetry{display:grid;grid-template-columns:1fr 1fr;gap:8px;width:100%;margin-top:4px}
+.tcell{border:1px solid var(--line-soft);border-radius:2px;padding:9px 11px;background:rgba(0,0,0,.18)}
+.tval{font-size:1.15rem;font-weight:700;color:#eef3f7;letter-spacing:-.01em}
+.tval.warn{color:var(--red)}
+.tkey{font-size:.64rem;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);margin-top:3px}
+.tsub{text-align:center;font-size:.74rem;color:var(--dim);margin-top:2px}
+.tsub b{color:var(--tx);font-weight:700}
+
+/* history */
+.hist{overflow:visible}
+.ax{font-family:var(--mono);font-size:8.5px;fill:#5b6975;letter-spacing:.05em}
+.hist-line{stroke-dasharray:1400;stroke-dashoffset:1400;animation:draw 1.5s ease .35s forwards}
+.hist-area{opacity:0;animation:fade .8s ease .7s forwards}
+
+/* inventory */
+.inv{display:flex;flex-direction:column;gap:9px}
+.inv-row{display:grid;grid-template-columns:140px 1fr 56px 44px;align-items:center;gap:12px}
+@media(max-width:560px){.inv-row{grid-template-columns:96px 1fr 48px 36px;gap:8px}}
+.inv-label{color:var(--tx);font-size:.78rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.inv-track{height:9px;background:rgba(0,0,0,.32);border:1px solid var(--line-soft);border-radius:2px;overflow:hidden}
+.inv-fill{height:100%;width:0;border-radius:1px;
+  background:linear-gradient(90deg,#2f7d8a,var(--cyan));
+  box-shadow:0 0 8px #56d6e644;animation:grow .9s cubic-bezier(.4,0,.2,1) both}
+.inv-fill.inv-unknown{background:repeating-linear-gradient(45deg,#2a343d,#2a343d 4px,transparent 4px,transparent 8px);box-shadow:none;width:100%!important;opacity:.5;animation:none}
+.inv-tok{text-align:right;font-size:.76rem;color:var(--cyan)}
+.inv-tok.dim{color:var(--faint)}
+.inv-cnt{text-align:right;font-size:.82rem;color:var(--tx);font-weight:600}
+.inv-cnt .unit{color:var(--faint);font-weight:400;margin-left:1px;font-size:.7rem}
+
+/* findings */
+.fgroup{margin-bottom:18px}
+.fgroup:last-child{margin-bottom:0}
+.fhead{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.ftype{font-size:.74rem;letter-spacing:.16em;text-transform:uppercase;color:var(--tx);font-weight:700}
+.fcount{font-size:.7rem;color:var(--dim);border:1px solid var(--line);border-radius:10px;padding:0 8px;min-width:22px;text-align:center}
+.frule{flex:1;height:1px;background:var(--line-soft)}
+.flist{list-style:none}
+.frow{display:grid;grid-template-columns:9px 52px 74px minmax(120px,1fr) 2fr;align-items:baseline;gap:11px;
+  padding:6px 6px 6px 2px;border-bottom:1px solid var(--line-soft)}
+.frow:hover{background:rgba(86,214,230,.04)}
+@media(max-width:680px){.frow{grid-template-columns:9px 48px 1fr;row-gap:2px}
+  .fname{grid-column:2/-1}.freason{grid-column:2/-1}}
+.led{width:8px;height:8px;border-radius:50%;align-self:center;background:currentColor;box-shadow:0 0 6px currentColor}
+.fsev{font-size:.64rem;font-weight:700;letter-spacing:.05em;text-transform:uppercase}
+.fkind{font-size:.72rem;color:var(--dim)}
+.fname{font-size:.8rem;color:#dfe6ee;word-break:break-word}
+.freason{font-size:.75rem;color:var(--dim);word-break:break-word}
+.sev-high{color:var(--red)}.sev-warn{color:var(--amber)}.sev-info{color:var(--cyan)}
+
+.no-data{color:var(--faint);font-style:normal;padding:10px 0;font-size:.82rem}
+.no-data code{color:var(--cyan);font-style:normal}
+.no-data.ok{color:var(--green)}
+code{font-family:var(--mono)}
+
+footer{margin-top:30px;padding-top:16px;border-top:1px solid var(--line-soft);
+  color:var(--faint);font-size:.72rem;letter-spacing:.04em;
+  display:flex;flex-wrap:wrap;gap:6px 18px;align-items:center;
+  opacity:0;animation:rise .6s ease .45s forwards}
+footer .k{color:var(--dim)}
+footer .lock{color:var(--green)}
+
+@keyframes rise{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+@keyframes sweep{from{stroke-dashoffset:389.56}to{stroke-dashoffset:var(--final)}}
+@keyframes grow{from{width:0}to{width:var(--w)}}
+@keyframes draw{to{stroke-dashoffset:0}}
+@keyframes fade{to{opacity:1}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+@media(prefers-reduced-motion:reduce){
+  *{animation:none!important}
+  header,.panel,footer{opacity:1;transform:none}
+  .gauge-arc{stroke-dashoffset:var(--final)}
+  .inv-fill{width:var(--w)}
+  .hist-line{stroke-dashoffset:0}.hist-area{opacity:1}
+}
 </style>`;
 }
 
@@ -339,6 +448,7 @@ footer strong{color:#64748b}
 // ---------------------------------------------------------------------------
 export function renderDashboardHtml(data: DashboardData): string {
   const colorClass = scoreColorClass(data.score);
+  const status = statusLabel(data.score);
   const donut = renderDonutGauge(data.score);
   const historyChart = renderHistoryChart(data.history);
   const inventoryBars = renderInventoryBars(data.byKind, data.totalFootprintTokens);
@@ -353,65 +463,62 @@ export function renderDashboardHtml(data: DashboardData): string {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Context Curator Dashboard — ${esc(data.dateLabel)}</title>
+<title>context-curator dashboard — ${esc(data.dateLabel)}</title>
 ${styles}
 </head>
 <body>
-<h1>Context Curator Dashboard</h1>
-<p class="subtitle">Project: <code>${esc(data.projectDir)}</code></p>
+<span class="reg tl"></span><span class="reg tr"></span><span class="reg bl"></span><span class="reg br"></span>
+<div class="wrap">
+<header>
+  <div class="brand">context<b>·</b>curator <span class="dim">/ telemetry</span></div>
+  <div class="readout">
+    <span class="rd"><span class="k">project</span><span class="v">${esc(data.projectDir)}</span></span>
+    <span class="rd"><span class="k">scan</span><span class="v">${esc(data.dateLabel)}</span></span>
+    <span class="rd"><span class="k">assets</span><span class="v">${data.totalAssets}</span></span>
+    <span class="status ${status.cls}"><span class="dot"></span>${status.text}</span>
+  </div>
+</header>
 
 <div class="grid">
-  <!-- Score card -->
-  <div class="card">
-    <h2>Context Health Score</h2>
-    <div class="score-section">
+  <div class="panel">
+    <div class="eyebrow">context health</div>
+    <div class="gauge-wrap">
       ${donut}
-      <div>
-        <div class="score-num ${colorClass}">${data.score}</div>
-        <div class="score-label">/ 100</div>
-        <div class="score-sub">
-          ${data.stalePercent}% stale &nbsp;·&nbsp;
-          ${esc(fmtTokens(data.staleFootprintTokens))} / ${esc(fmtTokens(data.totalFootprintTokens))} tokens
-        </div>
+      <div class="score-line">
+        <span class="score-num ${colorClass}">${data.score}</span>
+        <span class="score-den">/ 100</span>
       </div>
-    </div>
-    <div class="stat-grid">
-      <div class="stat-item">
-        <div class="stat-val">${data.totalAssets}</div>
-        <div class="stat-key">総資産数</div>
-      </div>
-      <div class="stat-item">
-        <div class="stat-val ${highCount > 0 ? 'score-red' : ''}">${totalFindings}</div>
-        <div class="stat-key">Findings${highCount > 0 ? ` (${highCount} HIGH)` : ''}</div>
+      <div class="tsub">起動時 <b>${esc(fmtTokens(data.totalFootprintTokens))}</b> tokens · うち
+        <b>${data.stalePercent}%</b> が stale/unused</div>
+      <div class="telemetry">
+        <div class="tcell"><div class="tval">${esc(fmtTokens(data.staleFootprintTokens))}</div><div class="tkey">stale tokens</div></div>
+        <div class="tcell"><div class="tval ${highCount > 0 ? 'warn' : ''}">${totalFindings}</div><div class="tkey">findings${highCount > 0 ? ` · ${highCount} high` : ''}</div></div>
       </div>
     </div>
   </div>
 
-  <!-- History card -->
-  <div class="card">
-    <h2>Score 履歴</h2>
-    <div class="chart-wrap">
-      ${historyChart}
-    </div>
+  <div class="panel">
+    <div class="eyebrow">score history</div>
+    ${historyChart}
   </div>
 </div>
 
-<!-- Inventory card -->
-<div class="card" style="margin-bottom:16px">
-  <h2>コンテキスト資産 内訳</h2>
+<div class="panel full">
+  <div class="eyebrow">context asset footprint</div>
   ${inventoryBars}
 </div>
 
-<!-- Findings card -->
-<div class="card">
-  <h2>Findings (${totalFindings})</h2>
+<div class="panel find">
+  <div class="eyebrow">findings · ${totalFindings}</div>
   ${findingsHtml}
 </div>
 
 <footer>
-  <strong>Generated:</strong> ${esc(data.generatedAt)}<br>
-  read-only。~/.claude は変更していない。
+  <span class="k">generated</span> ${esc(data.generatedAt)}
+  <span class="lock">● read-only</span>
+  <span>~/.claude は変更していない</span>
 </footer>
+</div>
 </body>
 </html>`;
 }
