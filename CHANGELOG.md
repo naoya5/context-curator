@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.0 (2026-06-17)
+
+### Added
+- `curator dashboard [--out <path>] [--open] [--all-projects]` — 自己完結 HTML の
+  Observability ダッシュボードを生成。Context Health Score（SVG ドーナツゲージ）、
+  スコア時系列（SVG 折れ線）、資産内訳、findings を1枚で可視化
+- 完全オフライン: 外部 CDN/ネットワークリソース不使用、チャートは手書き inline SVG、
+  全動的文字列を HTML エスケープ（read-only。出力 HTML を書くだけで `~/.claude` は触らない）
+
+### Tests
+- `apply → restore` 安全クリティカル経路の実バイナリ E2E 回帰テストを追加
+- dashboard レンダリング（エスケープ/自己完結/集計）の単体テスト 39 件追加 — 計 296 tests
+
 ## 0.4.0 (2026-06-13)
 
 ### Added

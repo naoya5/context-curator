@@ -458,3 +458,88 @@ package.json / cli を 0.3.0 に bump。CHANGELOG 追記。
 ### 10.5 バージョニング
 
 0.4.0 に bump。CHANGELOG 追記。
+
+---
+
+## 11. v0.5 — Observability ダッシュボード（2026-06-17 設計）
+
+> 元提案のアイデア②「Agent Memory Observability」の統合。CLI が出す数値を
+> 自己完結 HTML で可視化する。**read-only**（出力 HTML を書くだけ。~/.claude は触らない）。
+
+### 11.1 コマンド
+
+```
+curator dashboard [--out <path>] [--open] [--all-projects]
+```
+
+- `--out`: 出力先 HTML パス。省略時 `<curatorHome>/dashboard.html`
+- `--open`: 生成後に OS のブラウザで開く（デフォルト off。spawn は --open 時のみ）
+- `--all-projects`: 既知の全プロジェクトの project スコープ資産を統合（scan/check と同じ）
+
+### 11.2 設計原則（プロダクト思想と一致）
+
+1. **完全自己完結**: 外部 CDN / ネットワークリソースを一切使わない。CSS は inline `<style>`、
+   チャートは手書き inline SVG。チャートライブラリを CDN から読むのは「オフライン・安全」思想に反するので不可
+2. **HTML エスケープ必須**: asset 名・パス・reason・projectDir 等は filesystem 由来で
+   `< > & " '` を含みうる。全動的文字列をエスケープする（描画崩れ・HTML注入の防止）。これは正確性要件
+3. **描画は純関数**: `renderDashboardHtml(data: DashboardData): string` は I/O を持たない純関数にし、
+   単体テスト可能にする。データ収集（pipeline 実行 + history 読み込み）とファイル書き込みは CLI が担う
+4. **再計算しない**: score / byKind / footprint は `buildCostReport().json` を、時系列は
+   `loadHistoryEntries()` を、findings は `runEvaluation()` をそのまま再利用する
+
+### 11.3 データ契約
+
+```ts
+export interface DashboardData {
+  generatedAt: string;        // ISO8601
+  dateLabel: string;          // YYYY-MM-DD
+  projectDir: string;
+  score: number;              // 0-100
+  totalFootprintTokens: number;
+  staleFootprintTokens: number;
+  stalePercent: number;
+  totalAssets: number;
+  byKind: Array<{ label: string; count: number; tokens: number | null }>; // tokens=null は unknown(MCP)
+  history: Array<{ date: string; score: number; totalTokens: number; staleTokens: number }>; // 古い→新しい
+  findings: Array<{
+    type: FindingType; severity: 'info' | 'warn' | 'high';
+    assetId: string; kind: string; name: string; reason: string;
+  }>;
+  findingCountsByType: Record<string, number>;
+}
+
+export function buildDashboardData(input: {
+  cost: { date: string; score: number; totalFootprintTokens: number;
+          staleFootprintTokens: number; stalePercent: number;
+          byKind: Array<{ label: string; count: number; tokens: number | null }> };
+  findings: Finding[];
+  totalAssets: number;
+  history: Array<{ date: string; score: number; totalTokens: number; staleTokens: number }>;
+  projectDir: string;
+  generatedAt: string;
+}): DashboardData;
+
+export function renderDashboardHtml(data: DashboardData): string; // 純関数・自己完結
+```
+
+### 11.4 描画要件
+
+- **Score**: 大きく表示。色は cost.ts と同じしきい値（≥80 緑 / ≥50 黄 / <50 赤）。
+  inline SVG のドーナツゲージで視覚化
+- **History**: score の時系列を inline SVG 折れ線で。0点なら「履歴なし」、1点でもクラッシュしない
+- **Inventory**: byKind を横棒（tokens 比率）+ 件数。tokens=null は「unknown」表示
+- **Findings**: type 別にグルーピング、件数バッジ、severity 色。reason を表示（エスケープ済み）
+- **Footer**: generatedAt、「read-only。~/.claude は変更していない」の注記
+
+### 11.5 テスト必須項目（test/dashboard.test.ts）
+
+- renderDashboardHtml が **`<` `>` `&` `"` を含む asset 名/reason を正しくエスケープ**する
+  （生の `<script>` が出力に現れないこと）
+- 出力に **外部ネットワーク参照（`http://` / `https://` の script/link/img src）が無い**こと
+- history 0件 / 1件 / 複数件でクラッシュしない
+- score のしきい値別の色クラスが出る
+- buildDashboardData が findingCountsByType を正しく集計する
+
+### 11.6 バージョニング
+
+0.5.0 に bump。CHANGELOG / README 追記。MCP マトリクスの可視化は v0.5 では含めず将来拡張。

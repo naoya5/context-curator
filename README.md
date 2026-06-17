@@ -93,6 +93,7 @@ curator install-skill           # /curator スキルを ~/.claude/skills/ に導
 | `curator mcp --apply` | プロジェクト定義（.mcp.json）の未使用サーバーを承認制で無効化 |
 | `curator cost --history` | Health Score の時系列推移（スパークライン付き） |
 | `curator install-skill` | `/curator` スキルラッパーを `~/.claude/skills/curator/` にインストール |
+| `curator dashboard` | 自己完結 HTML の可視化ダッシュボードを生成。`--out` `--open` `--all-projects` |
 
 `scan` / `check` / `cost` は `--all-projects` で全プロジェクトの project スコープ資産を統合できる。
 
@@ -145,6 +146,7 @@ ignore:
 - ~~v0.2: 承認制 archive（復元可能な片付け）/ 重複スキル検出~~ ✅ 完了
 - ~~v0.3: MCP active-set 提案 / `/curator` スキルラッパー / Health Score 時系列 / `--all-projects`~~ ✅ 完了
 - ~~v0.4: npm 公開準備 / mcp --apply / memory 内容 lint~~ ✅ 完了（publish 手順は [docs/PUBLISHING.md](docs/PUBLISHING.md)）
+- ~~v0.5: Observability ダッシュボード（自己完結 HTML）~~ ✅ 完了（`curator dashboard`）
 
 memory lint の限界: 静的解析のため意味的な矛盾・正確性は検出できない。LLM による内容レビューは
 `/curator` スキル経由の運用（check 結果を Claude に読ませる）に委ね、CLI は候補提示に徹する。

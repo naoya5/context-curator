@@ -16,8 +16,12 @@ import { installSkill } from './apply/install-skill.js';
 import { buildMcpDisableProposals, applyMcpDisable } from './apply/mcp-disable.js';
 import { loadMcpMatrix, listKnownProjectDirs } from './usage/index.js';
 import { buildMcpReport } from './report/mcp.js';
-import { buildHistoryReport } from './report/history.js';
+import { buildHistoryReport, loadHistoryEntries } from './report/history.js';
+import { buildDashboardData, renderDashboardHtml } from './report/dashboard.js';
 import { lintMemories } from './policy/memory-lint.js';
+import { writeFileSync, mkdirSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { spawn } from 'node:child_process';
 import type { Asset, AssetKind, FindingType, Proposal, UsageStats } from './types.js';
 
 const FINDING_TYPES: FindingType[] = ['stale', 'unused', 'bloated', 'zombie', 'duplicate', 'lint'];
@@ -27,7 +31,7 @@ const program = new Command();
 program
   .name('curator')
   .description('Claude context asset inventory and hygiene tool')
-  .version('0.4.0');
+  .version('0.5.0');
 
 // ─── scan ──────────────────────────────────────────────────────────────────
 program
@@ -473,6 +477,54 @@ program
     } catch (e) {
       console.error(pc.red(`✗ ${e instanceof Error ? e.message : String(e)}`));
       process.exit(1);
+    }
+  });
+
+// ─── dashboard ───────────────────────────────────────────────────────────────
+program
+  .command('dashboard')
+  .description('Generate a self-contained HTML observability dashboard (read-only)')
+  .option('--out <path>', 'Output HTML path (default: <curatorHome>/dashboard.html)')
+  .option('--open', 'Open the generated dashboard in the default browser')
+  .option('--all-projects', 'Include project-scoped assets from all known projects')
+  .action(async (opts: { out?: string; open?: boolean; allProjects?: boolean }) => {
+    const paths = resolvePaths();
+    const { assets, findings } = await runEvaluation(opts.allProjects);
+    // score/byKind/footprint は cost と同じ計算を再利用（履歴には書き込まない＝副作用なし）
+    const cost = buildCostReport(assets, findings, {}).json as {
+      date: string;
+      score: number;
+      totalFootprintTokens: number;
+      staleFootprintTokens: number;
+      stalePercent: number;
+      byKind: Array<{ label: string; count: number; tokens: number | null }>;
+    };
+    const history = loadHistoryEntries(paths.curatorHome);
+    const data = buildDashboardData({
+      cost,
+      findings,
+      totalAssets: assets.length,
+      history,
+      projectDir: paths.projectDir,
+      generatedAt: new Date().toISOString(),
+    });
+    const html = renderDashboardHtml(data);
+
+    const outPath = opts.out ?? join(paths.curatorHome, 'dashboard.html');
+    mkdirSync(dirname(outPath), { recursive: true });
+    writeFileSync(outPath, html, 'utf8');
+    console.log(pc.green(`✓ dashboard written: ${outPath}`));
+    console.log(pc.dim(`  score ${data.score}/100  ·  ${data.totalAssets} assets  ·  ${findings.length} findings`));
+
+    if (opts.open) {
+      const cmd = process.platform === 'darwin' ? 'open'
+        : process.platform === 'win32' ? 'start'
+        : 'xdg-open';
+      try {
+        spawn(cmd, [outPath], { detached: true, stdio: 'ignore', shell: process.platform === 'win32' }).unref();
+      } catch {
+        console.log(pc.dim(`  (ブラウザを開けませんでした。手動で開いてください: ${outPath})`));
+      }
     }
   });
 
