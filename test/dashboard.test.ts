@@ -115,10 +115,10 @@ describe('buildDashboardData', () => {
       findings: [],
       totalAssets: 0,
       history: [],
-      projectDir: '/Users/naoya/myproject',
+      projectDir: '/Users/example/myproject',
       generatedAt: '2026-06-17T10:30:00Z',
     });
-    expect(data.projectDir).toBe('/Users/naoya/myproject');
+    expect(data.projectDir).toBe('/Users/example/myproject');
     expect(data.generatedAt).toBe('2026-06-17T10:30:00Z');
   });
 

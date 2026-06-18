@@ -1,5 +1,9 @@
 # context-curator
 
+![tests](https://img.shields.io/badge/tests-296%20passing-brightgreen)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+![Node](https://img.shields.io/badge/node-%3E%3D20-339933?logo=node.js&logoColor=white)
+
 **Claude Code 環境の「コンテキスト資産」ライフサイクル管理 CLI。**
 
 skills / MCP servers / CLAUDE.md / memory / commands / agents を台帳化し、
@@ -154,11 +158,18 @@ memory lint の限界: 静的解析のため意味的な矛盾・正確性は検
 ## 開発
 
 ```bash
-npx tsc --noEmit && npx vitest run   # 型チェック + テスト（255 tests）
+npm ci
+npm run typecheck && npm test   # 型チェック + テスト（296 tests）
+npm run build                   # dist/ へコンパイル
 ```
 
 設計書: [docs/DESIGN.md](docs/DESIGN.md)
 
+## Contributing
+
+PR・Issue を歓迎します。開発環境・テスト方針・**設計の不変条件**（read-only / 削除しない /
+ダッシュボードの自己完結性など）は [CONTRIBUTING.md](CONTRIBUTING.md) を参照してください。
+
 ## License
 
-MIT
+[MIT](LICENSE) © naoya5

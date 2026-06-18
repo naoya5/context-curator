@@ -218,7 +218,7 @@ describe('extractEventsFromLines from broken.jsonl', () => {
     const { events } = extractEventsFromLines(result.lines);
     // Should get events from the valid lines:
     //   line 1: deep-research (valid)
-    //   line 3: mcp__voisona__speak (valid)
+    //   line 3: mcp__playwright__speak (valid)
     //   lines 5,6,7: missing ts/cwd/sessionId → dropped
     //   line 8: Bash → skipped (non-tracked)
     //   line 9: system type → ignored
@@ -371,11 +371,11 @@ describe('loadUsageStats', () => {
     expect(aw!.projects).toHaveLength(3);
     expect(aw!.lastUsed).toBeTruthy();
 
-    // mcp voisona: 2 calls from same project
-    const voisona = stats.find(s => s.ref === 'voisona' && s.kind === 'mcp-tool');
-    expect(voisona).toBeDefined();
-    expect(voisona!.count).toBe(2);
-    expect(voisona!.projects).toHaveLength(1); // same cwd
+    // mcp playwright: 2 calls from same project
+    const playwright = stats.find(s => s.ref === 'playwright' && s.kind === 'mcp-tool');
+    expect(playwright).toBeDefined();
+    expect(playwright!.count).toBe(2);
+    expect(playwright!.projects).toHaveLength(1); // same cwd
 
     // agent researcher: 1 call
     const researcher = stats.find(s => s.ref === 'researcher' && s.kind === 'agent');

@@ -30,8 +30,8 @@ policy:
     duplicateThreshold: 0.7 # 同一ディレクトリ内 memory の近似重複しきい値
 
 # 検出から除外する asset id のリスト（glob パターン可、`*` のみ対応）
-# asset id の形式: "<kind>:<name>" 例 "skill:daily-commit" / "mcp-server:voisona"
+# asset id の形式: "<kind>:<name>" 例 "skill:daily-commit" / "mcp-server:playwright"
 ignore:
   - "skill:daily-commit"
   # - "command:*"          # 全コマンドを除外する例
-  # - "mcp-server:voisona" # 特定 MCP サーバーを除外する例
+  # - "mcp-server:playwright" # 特定 MCP サーバーを除外する例

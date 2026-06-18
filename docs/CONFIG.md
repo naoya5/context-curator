@@ -80,7 +80,7 @@ memory lint の4ルール:
 ignore:
   - "skill:daily-commit"   # 特定スキルを除外
   - "command:*"            # 全コマンドを除外
-  - "mcp-server:voisona"   # 特定 MCP サーバーを除外
+  - "mcp-server:playwright" # 特定 MCP サーバーを除外
 ```
 
 asset id は `curator scan --json` の各 asset の `id` フィールドで確認できる。
