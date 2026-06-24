@@ -11,7 +11,7 @@ import { detectDuplicates } from './duplicates.js';
 // kind mapping: skill↔skill, mcp-server↔mcp-tool, agent↔agent
 type StatsKind = UsageStats['kind'];
 
-function assetKindToStatsKind(assetKind: Asset['kind']): StatsKind | null {
+export function assetKindToStatsKind(assetKind: Asset['kind']): StatsKind | null {
   switch (assetKind) {
     case 'skill': return 'skill';
     case 'mcp-server': return 'mcp-tool';
@@ -23,7 +23,7 @@ function assetKindToStatsKind(assetKind: Asset['kind']): StatsKind | null {
 /**
  * Build an index from (kind, ref) → UsageStats for O(1) lookup.
  */
-function buildStatsIndex(stats: UsageStats[]): Map<string, UsageStats> {
+export function buildStatsIndex(stats: UsageStats[]): Map<string, UsageStats> {
   const map = new Map<string, UsageStats>();
   for (const s of stats) {
     map.set(`${s.kind}:${s.ref}`, s);

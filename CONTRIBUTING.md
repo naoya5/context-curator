@@ -27,8 +27,11 @@ npm run build              # dist/ へコンパイル
    クロスデバイス移動の fallback 1箇所（`src/apply/archive-move.ts`）以外に存在してはならない
 4. **設定 JSON 編集は backup + atomic write**：パース失敗時は中止。`src/apply/claudejson.ts` の
    `safeEditJson` を経由する
-5. **ダッシュボードは完全自己完結**：外部 CDN/ネットワークリソース禁止、`<script>` タグ禁止、
-   全動的文字列を HTML エスケープ、`renderDashboardHtml` は I/O のない純関数
+5. **ダッシュボードは完全自己完結**：外部 CDN/ネットワークリソース禁止（外部 `src`/`href`/
+   フォント/スクリプト一切なし）、全動的文字列を HTML エスケープ、`renderDashboardHtml` は
+   I/O のない純関数。インライン `<script>` は許可するが、**エスケープ済み `data-*` 属性だけを読み、
+   既存 DOM 行を並べ替えるだけ**にとどめ、ユーザー由来データを DOM へ書き戻さない（XSS ベクタを作らない）。
+   テーブルはサーバー側で「使われてない順」に pre-sort 済みとし、JS 無効でも意味を持つこと
 6. **トークンは推定**：`~` 付きで表示し、MCP サーバーの footprint は `unknown` と正直に出す
    （偽精度を出さない）
 7. **クラッシュさせない**：scanner / parser は対象不在・壊れたデータで例外を投げず、

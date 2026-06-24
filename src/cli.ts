@@ -490,7 +490,7 @@ program
   .option('--json', 'Output generation metadata as JSON (path, bytes, score, counts)')
   .action(async (opts: { out?: string; open?: boolean; allProjects?: boolean; json?: boolean }) => {
     const paths = resolvePaths();
-    const { assets, findings } = await runEvaluation(opts.allProjects);
+    const { assets, findings, stats } = await runEvaluation(opts.allProjects);
     // score/byKind/footprint は cost と同じ計算を再利用（履歴には書き込まない＝副作用なし）
     const cost = buildCostReport(assets, findings, {}).json as {
       date: string;
@@ -508,6 +508,7 @@ program
       history,
       projectDir: paths.projectDir,
       generatedAt: new Date().toISOString(),
+      stats,
     });
     const html = renderDashboardHtml(data);
 
@@ -542,7 +543,7 @@ program
   });
 
 /** Shared pipeline: ledger update + scan + policy evaluation */
-async function runEvaluation(allProjects = false): Promise<{ assets: Asset[]; findings: ReturnType<typeof evaluate> }> {
+async function runEvaluation(allProjects = false): Promise<{ assets: Asset[]; findings: ReturnType<typeof evaluate>; stats: UsageStats[] }> {
   const paths = resolvePaths();
   const config = loadConfig(paths.curatorHome);
   // ledger を先に更新 — all-projects のプロジェクト発見は ledger の cwd に依存する
@@ -553,7 +554,7 @@ async function runEvaluation(allProjects = false): Promise<{ assets: Asset[]; fi
   const findings = evaluate(inventory.assets, stats, config.policy, config.ignore);
   // memory 内容 lint は I/O を伴うため engine（純関数）の外で結合（DESIGN.md §10.3）
   const lintFindings = await lintMemories(inventory.assets, config.policy);
-  return { assets: inventory.assets, findings: [...findings, ...lintFindings] };
+  return { assets: inventory.assets, findings: [...findings, ...lintFindings], stats };
 }
 
 await program.parseAsync(process.argv);
