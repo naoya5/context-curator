@@ -129,3 +129,27 @@ describe('CLI e2e: archive → restore round-trip (safety-critical)', () => {
     expect(existsSync(join(curatorHome, 'archive'))).toBe(false);
   }, 60_000);
 });
+
+// README L104「全コマンド --json 対応」の契約を dashboard でも満たす（v0.5 で漏れていた）。
+describe('CLI e2e: dashboard --json', () => {
+  it('emits machine-readable meta JSON and writes the HTML file matching it', async () => {
+    const outPath = join(sandbox, 'dash.html');
+    const res = runCli(['dashboard', '--json', '--out', outPath]);
+    expect(res.status).toBe(0);
+
+    // stdout は純粋な JSON（人間向け行を混ぜない）
+    const meta = JSON.parse(res.stdout);
+    expect(typeof meta.score).toBe('number');
+    expect(typeof meta.totalAssets).toBe('number');
+    expect(typeof meta.findings).toBe('number');
+    expect(meta.outPath).toBe(outPath);
+
+    // bytes は実際に書き出した HTML のバイト数と一致する
+    expect(existsSync(outPath)).toBe(true);
+    const actual = await readFile(outPath);
+    expect(meta.bytes).toBe(actual.byteLength);
+
+    // ✓ dashboard written のような人間向け行は混ぜない
+    expect(res.stdout).not.toContain('dashboard written');
+  }, 60_000);
+});

@@ -4,3 +4,5 @@ dist/
 *.d.ts
 *.d.ts.map
 .DS_Store
+
+dashboard.html

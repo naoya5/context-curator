@@ -5,8 +5,16 @@
 // ground with green/amber/red as the only chroma, blueprint grid, registration
 // marks, CSS-only load choreography. Fully self-contained: no external
 // CDN/font/network resources; charts are hand-drawn inline SVG; every dynamic
-// string is HTML-escaped; no <script> tag (no JS, no XSS vector).
-import type { Finding, FindingType } from '../types.js';
+// string is HTML-escaped.
+//
+// Interactivity: the findings table is server-side pre-sorted by "least used"
+// so it is meaningful with JS disabled; a single inline <script> progressively
+// enhances it with click-to-sort + filter. The script reads ONLY escaped
+// data-* attributes and reorders existing DOM rows — it never writes user data
+// into the DOM, so there is no XSS vector despite the added JS. Still fully
+// self-contained (no external resources).
+import type { Finding, FindingType, UsageStats } from '../types.js';
+import { assetKindToStatsKind, buildStatsIndex } from '../policy/engine.js';
 
 // ---------------------------------------------------------------------------
 // DashboardData contract (DESIGN.md §11.3)
@@ -22,11 +30,46 @@ export interface DashboardData {
   totalAssets: number;
   byKind: Array<{ label: string; count: number; tokens: number | null }>; // tokens=null は unknown(MCP)
   history: Array<{ date: string; score: number; totalTokens: number; staleTokens: number }>; // 古い→新しい
-  findings: Array<{
-    type: FindingType; severity: 'info' | 'warn' | 'high';
-    assetId: string; kind: string; name: string; reason: string;
-  }>;
+  findings: DashboardFinding[]; // 使われてない順（never-used → idle が長い順）にソート済み
   findingCountsByType: Record<string, number>;
+  topUnused: DashboardFinding[]; // 片付け候補 Top-N（footprint 降順、assetId 重複排除、lint 除外）
+}
+
+/** dashboard 1 行ぶんの finding（使用統計とアクションを付与済み） */
+export interface DashboardFinding {
+  type: FindingType;
+  severity: 'info' | 'warn' | 'high';
+  assetId: string;
+  kind: string;
+  name: string;
+  reason: string;
+  /** 最終使用 ISO8601。未使用 / 計測対象外は null */
+  lastUsed: string | null;
+  /** generatedAt 基準の「最終使用からの放置日数」。never-used / 計測対象外は null */
+  idleDays: number | null;
+  /** 作成日 ISO8601（asset.createdAt、無ければ modifiedAt）。取得不能は null */
+  createdAt: string | null;
+  /** generatedAt 基準の「作成からの経過日数」 */
+  ageDays: number | null;
+  /** 「使われてない期間」＝ 使用歴ありは idle、never-used は作成からの経過。計測対象外は null */
+  unusedDays: number | null;
+  /** transcript 由来の呼び出し回数（計測対象外は 0） */
+  callCount: number;
+  /** skill / mcp-server / agent のみ true（使用が観測可能なもの） */
+  tracked: boolean;
+  /** 常時ロード分の推定トークン */
+  footprintTokens: number;
+  /** コピペ可能な片付けコマンド。lint は対象外で null */
+  applyCommand: string | null;
+}
+
+const SEVERITY_WEIGHT: Record<string, number> = { high: 3, warn: 2, info: 1 };
+const TOP_UNUSED_LIMIT = 8;
+
+/** 「使われてない期間」ランク（大きいほど上位）。never-used は作成からの経過で測る＝古い未使用ほど上。 */
+function unusedRank(f: DashboardFinding): number {
+  if (!f.tracked) return -1;        // 計測対象外（claude-md / memory / command）は末尾
+  return fnum(f.unusedDays);        // never-used は作成経過、使用歴ありは idle（長いほど上位）
 }
 
 // ---------------------------------------------------------------------------
@@ -46,11 +89,73 @@ export function buildDashboardData(input: {
   history: Array<{ date: string; score: number; totalTokens: number; staleTokens: number }>;
   projectDir: string;
   generatedAt: string;
+  /** UsageLedger 由来。省略時は使用統計なし（全 finding が never-used 扱い） */
+  stats?: UsageStats[];
 }): DashboardData {
   const findingCountsByType: Record<string, number> = {};
   for (const f of input.findings) {
     findingCountsByType[f.type] = (findingCountsByType[f.type] ?? 0) + 1;
   }
+
+  // usage 突合は policy engine と同一キー（kind:ref）で行う＝stale/unused 判定と整合
+  const statsIndex = buildStatsIndex(input.stats ?? []);
+  const nowMs = Date.parse(input.generatedAt);
+
+  const daysSince = (iso: string | null): number | null => {
+    if (!iso) return null;
+    const d = Math.floor((nowMs - Date.parse(iso)) / 86_400_000);
+    return Number.isFinite(d) ? Math.max(0, d) : null;
+  };
+
+  const findings: DashboardFinding[] = input.findings.map((f) => {
+    const mappedKind = assetKindToStatsKind(f.asset.kind);
+    const tracked = mappedKind !== null;
+    const s = mappedKind ? statsIndex.get(`${mappedKind}:${f.asset.name}`) : undefined;
+    const callCount = s?.count ?? 0;
+    const lastUsed = s?.lastUsed ?? null;
+    const idleDays = daysSince(lastUsed);
+    const createdAt = f.asset.createdAt ?? f.asset.modifiedAt ?? null;
+    const ageDays = daysSince(createdAt);
+    // 「使われてない期間」: 使用歴ありは idle、never-used は作成からの経過（古い未使用ほど長い）
+    const unusedDays = !tracked ? null : (lastUsed ? idleDays : ageDays);
+    return {
+      type: f.type,
+      severity: f.severity,
+      assetId: f.asset.id,
+      kind: f.asset.kind,
+      name: f.asset.name,
+      reason: f.reason,
+      lastUsed,
+      idleDays,
+      createdAt,
+      ageDays,
+      unusedDays,
+      callCount,
+      tracked,
+      footprintTokens: f.asset.footprintTokens,
+      // apply は lint を対象にしない（README: lint は候補提示のみ）
+      applyCommand: f.type === 'lint' ? null : `curator apply --ids ${f.asset.id}`,
+    };
+  });
+
+  // 「作成が古い かつ 使われてない期間が長い」順:
+  //   未使用期間 desc → 作成が古い順(age desc) → footprint 大 → severity 高 → 名前
+  findings.sort((a, b) =>
+    unusedRank(b) - unusedRank(a) ||
+    fnum(b.ageDays) - fnum(a.ageDays) ||
+    b.footprintTokens - a.footprintTokens ||
+    (SEVERITY_WEIGHT[b.severity]! - SEVERITY_WEIGHT[a.severity]!) ||
+    a.name.localeCompare(b.name),
+  );
+
+  // 片付け候補 Top-N: lint を除外し、assetId 重複排除、footprint 降順
+  const seen = new Set<string>();
+  const topUnused = findings
+    .filter((f) => f.applyCommand !== null)
+    .filter((f) => (seen.has(f.assetId) ? false : (seen.add(f.assetId), true)))
+    .slice()
+    .sort((a, b) => b.footprintTokens - a.footprintTokens || unusedRank(b) - unusedRank(a))
+    .slice(0, TOP_UNUSED_LIMIT);
 
   return {
     generatedAt: input.generatedAt,
@@ -63,15 +168,9 @@ export function buildDashboardData(input: {
     totalAssets: input.totalAssets,
     byKind: input.cost.byKind,
     history: input.history,
-    findings: input.findings.map((f) => ({
-      type: f.type,
-      severity: f.severity,
-      assetId: f.asset.id,
-      kind: f.asset.kind,
-      name: f.asset.name,
-      reason: f.reason,
-    })),
+    findings,
     findingCountsByType,
+    topUnused,
   };
 }
 
@@ -248,41 +347,160 @@ function renderInventoryBars(
 }
 
 // ---------------------------------------------------------------------------
-// Findings — console log grouped by type with LED severity indicators
+// Findings table — sortable (client-side, progressive enhancement) +
+// server-side pre-sorted by "least used" so it is meaningful even without JS.
 // ---------------------------------------------------------------------------
-function renderFindings(findings: DashboardData['findings']): string {
-  if (findings.length === 0) {
+
+/** number | null | undefined を安全に数値化（render は部分データにも耐える） */
+function fnum(v: number | null | undefined): number {
+  return typeof v === 'number' && Number.isFinite(v) ? v : 0;
+}
+
+/** 「使われてない期間」セル。never-used は作成からの経過でソートし表示は never。 */
+function unusedCell(f: DashboardFinding): { disp: string; sortv: number; cls: string } {
+  const tracked = f.tracked ?? true;
+  if (!tracked) return { disp: '—', sortv: -1, cls: 'dim' };       // 使用が観測不能な kind
+  const sortv = fnum(f.unusedDays);
+  if (fnum(f.callCount) === 0) return { disp: 'never', sortv, cls: 'idle-bad' };
+  const d = fnum(f.idleDays);
+  return { disp: `${d}d`, sortv, cls: d >= 30 ? 'idle-warn' : '' };
+}
+
+/** 「作成からの経過」セル。全 kind に存在しうる（createdAt 由来）。 */
+function ageCell(f: DashboardFinding): { disp: string; sortv: number; cls: string } {
+  if (f.ageDays == null) return { disp: '—', sortv: -1, cls: 'dim' };
+  const d = fnum(f.ageDays);
+  return { disp: `${d}d`, sortv: d, cls: d >= 180 ? 'idle-warn' : '' };
+}
+
+function renderFindingsTable(findings: DashboardFinding[]): string {
+  if (!findings || findings.length === 0) {
     return '<p class="no-data ok">Findings なし — クリーンな状態です ✓</p>';
   }
 
-  const groups = new Map<FindingType, typeof findings>();
-  for (const f of findings) {
-    if (!groups.has(f.type)) groups.set(f.type, []);
-    groups.get(f.type)!.push(f);
+  const kinds = Array.from(new Set(findings.map((f) => f.kind))).sort();
+  const kindOpts = ['<option value="all">all kinds</option>',
+    ...kinds.map((k) => `<option value="${esc(k)}">${esc(k)}</option>`)].join('');
+
+  const rows = findings.map((f) => {
+    const tracked = f.tracked ?? true;
+    const calls = fnum(f.callCount);
+    const unused = unusedCell(f);
+    const age = ageCell(f);
+    const foot = fnum(f.footprintTokens);
+    const sevW = SEVERITY_WEIGHT[f.severity] ?? 0;
+    const action = f.applyCommand
+      ? `<code class="cmd">${esc(f.applyCommand)}</code>`
+      : '<span class="dim">—</span>';
+    return `<tr class="frow" data-name="${esc(f.name)}" data-kind="${esc(f.kind)}" data-type="${esc(f.type)}" data-unused="${unused.sortv}" data-age="${age.sortv}" data-calls="${calls}" data-foot="${foot}" data-sev="${sevW}" data-tracked="${tracked ? 1 : 0}">
+      <td class="c-sev"><span class="led sev-${esc(f.severity)}" aria-hidden="true"></span><span class="fsev sev-${esc(f.severity)}">${esc(f.severity)}</span></td>
+      <td class="c-name"><span class="fname">${esc(f.name)}</span><span class="freason">${esc(f.reason)}</span></td>
+      <td class="c-kind">${esc(f.kind)}</td>
+      <td class="c-unused num ${unused.cls}">${esc(unused.disp)}</td>
+      <td class="c-age num ${age.cls}">${esc(age.disp)}</td>
+      <td class="c-calls num">${calls}<span class="unit">×</span></td>
+      <td class="c-foot num">${esc(fmtTokens(foot))}</td>
+      <td class="c-type"><span class="ttag tt-${esc(f.type)}">${esc(f.type)}</span></td>
+      <td class="c-act">${action}</td>
+    </tr>`;
+  }).join('\n');
+
+  const th = (key: string, label: string) =>
+    `<th class="sortable" data-sort="${key}"><button type="button" class="th-btn">${esc(label)}<span class="sort-ind" aria-hidden="true"></span></button></th>`;
+
+  return `<div class="ftools">
+    <label class="ctl">kind <select id="fkind">${kindOpts}</select></label>
+    <label class="ctl"><input type="checkbox" id="funused"> 未使用のみ</label>
+    <span class="ftools-hint dim">列見出しクリックで並べ替え（既定: 作成が古く未使用の順）</span>
+  </div>
+  <div class="ftable-scroll">
+  <table class="ftable">
+    <thead><tr>
+      <th class="c-sev">sev</th>
+      ${th('name', 'asset')}
+      ${th('kind', 'kind')}
+      ${th('unused', 'unused')}
+      ${th('age', 'age')}
+      ${th('calls', 'calls')}
+      ${th('foot', 'tokens')}
+      ${th('type', 'type')}
+      <th class="c-act">action</th>
+    </tr></thead>
+    <tbody id="ftbody">${rows}</tbody>
+  </table>
+  </div>`;
+}
+
+// ---------------------------------------------------------------------------
+// Top-N cleanup table — biggest reclaimable footprint among apply candidates
+// ---------------------------------------------------------------------------
+function renderTopUnused(top: DashboardFinding[]): string {
+  if (!top || top.length === 0) return '';
+  const rows = top.map((f, i) => {
+    const unused = unusedCell(f);
+    const age = ageCell(f);
+    return `<tr>
+      <td class="tu-rank">${i + 1}</td>
+      <td class="tu-name"><span class="fname">${esc(f.name)}</span> <span class="dim">${esc(f.kind)}</span></td>
+      <td class="num ${unused.cls}">${esc(unused.disp)}</td>
+      <td class="num ${age.cls}">${esc(age.disp)}</td>
+      <td class="num">${fnum(f.callCount)}<span class="unit">×</span></td>
+      <td class="num tu-foot">${esc(fmtTokens(fnum(f.footprintTokens)))}</td>
+      <td class="tu-act">${f.applyCommand ? `<code class="cmd">${esc(f.applyCommand)}</code>` : '<span class="dim">—</span>'}</td>
+    </tr>`;
+  }).join('\n');
+  const totalFoot = top.reduce((s, f) => s + fnum(f.footprintTokens), 0);
+  return `<table class="tutable">
+    <thead><tr><th>#</th><th>asset</th><th>unused</th><th>age</th><th>calls</th><th>tokens</th><th>cleanup</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>
+  <div class="tu-note dim">片付けで <b>~${esc(fmtTokens(totalFoot))}</b> tokens 相当の起動時コンテキストを回収できる見込み（推定）</div>`;
+}
+
+// ---------------------------------------------------------------------------
+// Inline behavior — sort + filter. Reads only escaped data-* attributes and
+// reorders existing DOM rows; never writes user data into the DOM (no XSS).
+// ---------------------------------------------------------------------------
+function buildScript(): string {
+  return `<script>
+(function(){
+  var tb=document.getElementById('ftbody'); if(!tb) return;
+  var rows=[].slice.call(tb.querySelectorAll('tr'));
+  var kindSel=document.getElementById('fkind');
+  var unusedChk=document.getElementById('funused');
+  var heads=[].slice.call(document.querySelectorAll('th.sortable'));
+  var state={key:null,dir:-1};
+  var TEXT={name:1,kind:1,type:1};
+  function num(r,k){var v=parseFloat(r.getAttribute('data-'+k));return isNaN(v)?0:v;}
+  function str(r,k){return r.getAttribute('data-'+k)||'';}
+  function sortBy(key){
+    if(state.key===key){state.dir=-state.dir;}else{state.key=key;state.dir=TEXT[key]?1:-1;}
+    rows.sort(function(a,b){
+      if(TEXT[key]){return state.dir*str(a,key).localeCompare(str(b,key));}
+      return state.dir*(num(a,key)-num(b,key));
+    });
+    rows.forEach(function(r){tb.appendChild(r);});
+    heads.forEach(function(h){
+      var ind=h.querySelector('.sort-ind');
+      if(h.getAttribute('data-sort')===key){h.setAttribute('data-active','1');if(ind)ind.textContent=state.dir>0?' \\u25B2':' \\u25BC';}
+      else{h.removeAttribute('data-active');if(ind)ind.textContent='';}
+    });
   }
-
-  const ORDER: FindingType[] = ['zombie', 'stale', 'unused', 'bloated', 'duplicate', 'lint'];
-  const blocks: string[] = [];
-
-  for (const type of ORDER) {
-    const group = groups.get(type);
-    if (!group || group.length === 0) continue;
-
-    const rows = group.map((f) => `<li class="frow">
-        <span class="led sev-${esc(f.severity)}" aria-hidden="true"></span>
-        <span class="fsev sev-${esc(f.severity)}">${esc(f.severity)}</span>
-        <span class="fkind">${esc(f.kind)}</span>
-        <span class="fname">${esc(f.name)}</span>
-        <span class="freason">${esc(f.reason)}</span>
-      </li>`);
-
-    blocks.push(`<div class="fgroup">
-      <div class="fhead"><span class="ftype">${esc(type)}</span><span class="fcount">${group.length}</span><span class="frule"></span></div>
-      <ul class="flist">${rows.join('\n')}</ul>
-    </div>`);
+  heads.forEach(function(h){h.addEventListener('click',function(){sortBy(h.getAttribute('data-sort'));});});
+  function applyFilter(){
+    var k=kindSel?kindSel.value:'all';
+    var uo=unusedChk?unusedChk.checked:false;
+    rows.forEach(function(r){
+      var show=true;
+      if(k!=='all'&&str(r,'kind')!==k)show=false;
+      if(uo&&!(str(r,'tracked')==='1'&&num(r,'calls')===0))show=false;
+      r.style.display=show?'':'none';
+    });
   }
-
-  return blocks.join('\n');
+  if(kindSel)kindSel.addEventListener('change',applyFilter);
+  if(unusedChk)unusedChk.addEventListener('change',applyFilter);
+})();
+</script>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -395,25 +613,61 @@ header{margin-bottom:26px;opacity:0;animation:rise .6s ease .05s forwards}
 .inv-cnt{text-align:right;font-size:.82rem;color:var(--tx);font-weight:600}
 .inv-cnt .unit{color:var(--faint);font-weight:400;margin-left:1px;font-size:.7rem}
 
-/* findings */
-.fgroup{margin-bottom:18px}
-.fgroup:last-child{margin-bottom:0}
-.fhead{display:flex;align-items:center;gap:10px;margin-bottom:8px}
-.ftype{font-size:.74rem;letter-spacing:.16em;text-transform:uppercase;color:var(--tx);font-weight:700}
-.fcount{font-size:.7rem;color:var(--dim);border:1px solid var(--line);border-radius:10px;padding:0 8px;min-width:22px;text-align:center}
-.frule{flex:1;height:1px;background:var(--line-soft)}
-.flist{list-style:none}
-.frow{display:grid;grid-template-columns:9px 52px 74px minmax(120px,1fr) 2fr;align-items:baseline;gap:11px;
-  padding:6px 6px 6px 2px;border-bottom:1px solid var(--line-soft)}
-.frow:hover{background:rgba(86,214,230,.04)}
-@media(max-width:680px){.frow{grid-template-columns:9px 48px 1fr;row-gap:2px}
-  .fname{grid-column:2/-1}.freason{grid-column:2/-1}}
-.led{width:8px;height:8px;border-radius:50%;align-self:center;background:currentColor;box-shadow:0 0 6px currentColor}
-.fsev{font-size:.64rem;font-weight:700;letter-spacing:.05em;text-transform:uppercase}
-.fkind{font-size:.72rem;color:var(--dim)}
+/* findings — shared bits */
+.led{width:8px;height:8px;border-radius:50%;display:inline-block;vertical-align:middle;background:currentColor;box-shadow:0 0 6px currentColor;margin-right:6px}
+.fsev{font-size:.62rem;font-weight:700;letter-spacing:.05em;text-transform:uppercase}
 .fname{font-size:.8rem;color:#dfe6ee;word-break:break-word}
 .freason{font-size:.75rem;color:var(--dim);word-break:break-word}
 .sev-high{color:var(--red)}.sev-warn{color:var(--amber)}.sev-info{color:var(--cyan)}
+
+/* findings tools (filter + sort controls) */
+.ftools{display:flex;flex-wrap:wrap;align-items:center;gap:10px 18px;margin-bottom:12px;font-size:.74rem}
+.ctl{display:inline-flex;align-items:center;gap:7px;color:var(--dim);letter-spacing:.04em}
+.ctl select{background:rgba(0,0,0,.3);color:var(--tx);border:1px solid var(--line);border-radius:2px;
+  font-family:var(--mono);font-size:.74rem;padding:3px 6px}
+.ctl input[type=checkbox]{accent-color:var(--cyan)}
+.ftools-hint{margin-left:auto;font-size:.68rem;letter-spacing:.06em}
+
+/* findings table */
+.ftable-scroll{overflow-x:auto}
+.ftable{width:100%;border-collapse:collapse;font-size:.76rem}
+.ftable thead th{text-align:left;color:var(--faint);font-weight:600;text-transform:uppercase;
+  letter-spacing:.1em;font-size:.62rem;padding:0 9px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+.ftable th.sortable{padding:0 0 8px}
+.th-btn{background:none;border:0;color:inherit;font:inherit;text-transform:inherit;letter-spacing:inherit;
+  cursor:pointer;padding:0 9px;display:inline-flex;align-items:center;gap:1px}
+.th-btn:hover{color:var(--cyan)}
+.ftable th[data-active] .th-btn{color:var(--cyan)}
+.sort-ind{color:var(--cyan);font-size:.7em}
+.ftable tbody td{padding:7px 9px;border-bottom:1px solid var(--line-soft);vertical-align:top}
+.ftable tbody tr:hover{background:rgba(86,214,230,.045)}
+.ftable .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.c-sev{width:62px;white-space:nowrap}
+.c-name{min-width:170px}
+.c-name .fname{display:block}
+.c-name .freason{display:block;margin-top:2px}
+.c-kind{color:var(--dim);white-space:nowrap}
+.idle-bad{color:var(--red);font-weight:600}
+.idle-warn{color:var(--amber)}
+.unit{color:var(--faint);font-weight:400;margin-left:1px;font-size:.85em}
+.ttag{font-size:.64rem;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);
+  border:1px solid var(--line);border-radius:10px;padding:1px 8px;white-space:nowrap}
+.cmd{font-family:var(--mono);font-size:.72rem;color:var(--cyan);background:rgba(86,214,230,.07);
+  border:1px solid var(--line-soft);border-radius:2px;padding:2px 6px;white-space:nowrap;user-select:all}
+
+/* top-unused cleanup table */
+.tutable{width:100%;border-collapse:collapse;font-size:.76rem}
+.tutable thead th{text-align:left;color:var(--faint);font-weight:600;text-transform:uppercase;
+  letter-spacing:.1em;font-size:.62rem;padding:0 9px 8px;border-bottom:1px solid var(--line)}
+.tutable tbody td{padding:7px 9px;border-bottom:1px solid var(--line-soft);vertical-align:baseline}
+.tutable tbody tr:hover{background:rgba(86,214,230,.045)}
+.tutable .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.tu-rank{color:var(--faint);width:26px;text-align:right;font-variant-numeric:tabular-nums}
+.tu-foot{color:var(--cyan);font-weight:600}
+.tu-note{margin-top:10px;font-size:.74rem}
+.tu-note b{color:var(--cyan)}
+.panel.topu{animation-delay:.32s}
+.panel.find{animation-delay:.40s}
 
 .no-data{color:var(--faint);font-style:normal;padding:10px 0;font-size:.82rem}
 .no-data code{color:var(--cyan);font-style:normal}
@@ -452,8 +706,11 @@ export function renderDashboardHtml(data: DashboardData): string {
   const donut = renderDonutGauge(data.score);
   const historyChart = renderHistoryChart(data.history);
   const inventoryBars = renderInventoryBars(data.byKind, data.totalFootprintTokens);
-  const findingsHtml = renderFindings(data.findings);
+  const findingsHtml = renderFindingsTable(data.findings);
+  const topUnused = data.topUnused ?? [];
+  const topUnusedHtml = renderTopUnused(topUnused);
   const styles = buildStyles();
+  const script = buildScript();
 
   const totalFindings = data.findings.length;
   const highCount = data.findings.filter((f) => f.severity === 'high').length;
@@ -508,6 +765,11 @@ ${styles}
   ${inventoryBars}
 </div>
 
+${topUnusedHtml ? `<div class="panel topu">
+  <div class="eyebrow">片付け候補 top ${topUnused.length} · reclaimable footprint</div>
+  ${topUnusedHtml}
+</div>` : ''}
+
 <div class="panel find">
   <div class="eyebrow">findings · ${totalFindings}</div>
   ${findingsHtml}
@@ -519,6 +781,7 @@ ${styles}
   <span>~/.claude は変更していない</span>
 </footer>
 </div>
+${script}
 </body>
 </html>`;
 }

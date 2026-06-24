@@ -1,4 +1,5 @@
 // inventory.ts — aggregate all scanners into an Inventory (DESIGN.md §4.1)
+import { statSync } from 'node:fs';
 import type { Asset, Inventory } from '../types.js';
 import type { ResolvedPaths } from '../paths.js';
 import { scanSkills } from './assets/skills.js';
@@ -86,9 +87,27 @@ export async function buildInventory(
     }
   }
 
+  // 作成日(createdAt)を一括付与（スキャナ横断で 1 箇所に集約）。
+  // birthtime が無効な FS では mtime にフォールバックし、stat 失敗時も落とさない。
+  for (const a of assets) {
+    a.createdAt = resolveCreatedAt(a);
+  }
+
   return {
     assets,
     scannedAt: new Date().toISOString(),
     warnings,
   };
+}
+
+/** asset.path の作成日を返す。birthtime 優先・mtime フォールバック・例外時は modifiedAt。 */
+function resolveCreatedAt(asset: Asset): string {
+  try {
+    const s = statSync(asset.path);
+    const bt = s.birthtimeMs;
+    if (bt && bt > 0 && bt <= s.mtimeMs) return s.birthtime.toISOString();
+    return s.mtime.toISOString();
+  } catch {
+    return asset.modifiedAt;
+  }
 }

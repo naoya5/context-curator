@@ -1,11 +1,15 @@
 // dashboard.test.ts — unit tests for dashboard module (DESIGN.md §11.5)
 import { describe, it, expect } from 'vitest';
-import type { Finding } from '../src/types.js';
+import type { Finding, UsageStats } from '../src/types.js';
 import {
   buildDashboardData,
   renderDashboardHtml,
   type DashboardData,
 } from '../src/report/dashboard.js';
+
+function makeStats(over: Partial<UsageStats> = {}): UsageStats {
+  return { ref: 'test-skill', kind: 'skill', count: 5, lastUsed: '2026-06-01T00:00:00Z', projects: ['/p'], ...over };
+}
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -78,10 +82,16 @@ function makeDashboardData(overrides: Partial<DashboardData> = {}): DashboardDat
       { date: '2026-06-17', score: 75, totalTokens: 1000, staleTokens: 250 },
     ],
     findings: [
-      { type: 'stale', severity: 'warn', assetId: 'skill:old-skill', kind: 'skill', name: 'old-skill', reason: '90日間未使用' },
-      { type: 'unused', severity: 'info', assetId: 'skill:dormant', kind: 'skill', name: 'dormant', reason: 'transcript に登場なし' },
+      { type: 'stale', severity: 'warn', assetId: 'skill:old-skill', kind: 'skill', name: 'old-skill', reason: '90日間未使用',
+        lastUsed: '2026-03-18T00:00:00Z', idleDays: 91, createdAt: '2025-12-01T00:00:00Z', ageDays: 198, unusedDays: 91, callCount: 4, tracked: true, footprintTokens: 600, applyCommand: 'curator apply --ids skill:old-skill' },
+      { type: 'unused', severity: 'info', assetId: 'skill:dormant', kind: 'skill', name: 'dormant', reason: 'transcript に登場なし',
+        lastUsed: null, idleDays: null, createdAt: '2025-10-01T00:00:00Z', ageDays: 259, unusedDays: 259, callCount: 0, tracked: true, footprintTokens: 300, applyCommand: 'curator apply --ids skill:dormant' },
     ],
     findingCountsByType: { stale: 1, unused: 1 },
+    topUnused: [
+      { type: 'unused', severity: 'info', assetId: 'skill:dormant', kind: 'skill', name: 'dormant', reason: 'transcript に登場なし',
+        lastUsed: null, idleDays: null, createdAt: '2025-10-01T00:00:00Z', ageDays: 259, unusedDays: 259, callCount: 0, tracked: true, footprintTokens: 300, applyCommand: 'curator apply --ids skill:dormant' },
+    ],
     ...overrides,
   };
 }
@@ -485,5 +495,139 @@ describe('renderDashboardHtml — structure', () => {
     expect(html).toContain('<style>');
     // No <link rel="stylesheet" href="...">
     expect(html).not.toMatch(/<link[^>]+stylesheet/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildDashboardData — usage enrichment, least-used sort, topUnused
+// ---------------------------------------------------------------------------
+describe('buildDashboardData — usage enrichment & least-used sort', () => {
+  function build(findings: Finding[], stats: UsageStats[] = [], generatedAt = '2026-06-20T00:00:00Z') {
+    return buildDashboardData({
+      cost: makeCost(), findings, totalAssets: findings.length, history: [],
+      projectDir: '/t', generatedAt, stats,
+    });
+  }
+
+  it('attaches callCount/lastUsed/idleDays from stats using the engine-matched key', () => {
+    const f = makeFinding({ asset: makeAsset({ id: 'skill:used', name: 'used', kind: 'skill' }) });
+    const data = build([f], [makeStats({ ref: 'used', kind: 'skill', count: 7, lastUsed: '2026-06-10T00:00:00Z' })]);
+    expect(data.findings[0].callCount).toBe(7);
+    expect(data.findings[0].lastUsed).toBe('2026-06-10T00:00:00Z');
+    expect(data.findings[0].idleDays).toBe(10);
+    expect(data.findings[0].tracked).toBe(true);
+  });
+
+  it('marks untracked kinds (claude-md/memory/command) as tracked=false', () => {
+    const f = makeFinding({ type: 'bloated', asset: makeAsset({ id: 'claude-md:C', name: 'C', kind: 'claude-md' }) });
+    const data = build([f]);
+    expect(data.findings[0].tracked).toBe(false);
+    expect(data.findings[0].idleDays).toBeNull();
+  });
+
+  it('sorts never-used (tracked) first, then by idle desc, untracked last', () => {
+    const never = makeFinding({ asset: makeAsset({ id: 'skill:never', name: 'never', kind: 'skill' }) });
+    const idle = makeFinding({ asset: makeAsset({ id: 'skill:idle', name: 'idle', kind: 'skill' }) });
+    const untracked = makeFinding({ type: 'bloated', asset: makeAsset({ id: 'claude-md:C', name: 'C', kind: 'claude-md' }) });
+    const data = build([idle, untracked, never], [makeStats({ ref: 'idle', kind: 'skill', count: 2, lastUsed: '2026-06-01T00:00:00Z' })]);
+    expect(data.findings.map((f) => f.assetId)).toEqual(['skill:never', 'skill:idle', 'claude-md:C']);
+  });
+
+  it('builds topUnused: excludes lint, dedupes by assetId, footprint desc, capped', () => {
+    const big = makeFinding({ asset: makeAsset({ id: 'skill:big', name: 'big', kind: 'skill', footprintTokens: 900 }) });
+    const small = makeFinding({ asset: makeAsset({ id: 'skill:small', name: 'small', kind: 'skill', footprintTokens: 100 }) });
+    const lint = makeFinding({ type: 'lint', asset: makeAsset({ id: 'memory:m', name: 'm', kind: 'memory', footprintTokens: 5000 }) });
+    const data = build([small, lint, big]);
+    expect(data.topUnused.map((f) => f.assetId)).toEqual(['skill:big', 'skill:small']);
+    expect(data.topUnused.every((f) => f.type !== 'lint')).toBe(true);
+  });
+
+  it('attaches copy-paste apply command for non-lint findings, null for lint', () => {
+    const stale = makeFinding({ asset: makeAsset({ id: 'skill:s', name: 's', kind: 'skill' }) });
+    const lint = makeFinding({ type: 'lint', asset: makeAsset({ id: 'memory:m', name: 'm', kind: 'memory' }) });
+    const data = build([stale, lint]);
+    const byId = Object.fromEntries(data.findings.map((f) => [f.assetId, f]));
+    expect(byId['skill:s']!.applyCommand).toBe('curator apply --ids skill:s');
+    expect(byId['memory:m']!.applyCommand).toBeNull();
+  });
+
+  it('computes ageDays from asset.createdAt (falls back to modifiedAt)', () => {
+    const f = makeFinding({ asset: makeAsset({ id: 'skill:a', name: 'a', kind: 'skill', createdAt: '2026-05-21T00:00:00Z' }) });
+    const data = build([f]); // generatedAt 2026-06-20
+    expect(data.findings[0].createdAt).toBe('2026-05-21T00:00:00Z');
+    expect(data.findings[0].ageDays).toBe(30);
+  });
+
+  it('among never-used assets, older creation date ranks first', () => {
+    const oldNever = makeFinding({ asset: makeAsset({ id: 'skill:old', name: 'old', kind: 'skill', createdAt: '2025-06-20T00:00:00Z' }) });
+    const newNever = makeFinding({ asset: makeAsset({ id: 'skill:new', name: 'new', kind: 'skill', createdAt: '2026-06-10T00:00:00Z' }) });
+    const data = build([newNever, oldNever]); // no stats → both never-used, ordered by creation age
+    expect(data.findings.map((f) => f.assetId)).toEqual(['skill:old', 'skill:new']);
+  });
+
+  it('a long-idle used asset ranks above a freshly-created never-used asset', () => {
+    const longIdle = makeFinding({ asset: makeAsset({ id: 'skill:idle', name: 'idle', kind: 'skill', createdAt: '2025-01-01T00:00:00Z' }) });
+    const freshNever = makeFinding({ asset: makeAsset({ id: 'skill:fresh', name: 'fresh', kind: 'skill', createdAt: '2026-06-15T00:00:00Z' }) });
+    const stats = [makeStats({ ref: 'idle', kind: 'skill', count: 3, lastUsed: '2026-01-01T00:00:00Z' })]; // idle ≈ 170d
+    const data = build([freshNever, longIdle], stats);
+    expect(data.findings.map((f) => f.assetId)).toEqual(['skill:idle', 'skill:fresh']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// renderDashboardHtml — sortable table + inline interactivity
+// ---------------------------------------------------------------------------
+describe('renderDashboardHtml — sortable findings table + interactivity', () => {
+  it('renders a findings table with sortable headers and data-* attributes', () => {
+    const html = renderDashboardHtml(makeDashboardData());
+    expect(html).toContain('class="ftable"');
+    expect(html).toContain('data-sort="unused"');
+    expect(html).toContain('data-sort="age"');
+    expect(html).toContain('data-unused=');
+    expect(html).toContain('data-age=');
+    expect(html).toContain('id="ftbody"');
+  });
+
+  it('includes an inline <script> (no external src) for sort/filter', () => {
+    const html = renderDashboardHtml(makeDashboardData());
+    expect(html).toContain('<script>');
+    expect(html).not.toMatch(/<script[^>]+src=/i);
+  });
+
+  it('renders filter controls (kind select + unused-only checkbox)', () => {
+    const html = renderDashboardHtml(makeDashboardData());
+    expect(html).toContain('id="fkind"');
+    expect(html).toContain('id="funused"');
+  });
+
+  it('renders copy-paste apply commands', () => {
+    const html = renderDashboardHtml(makeDashboardData());
+    expect(html).toContain('curator apply --ids');
+  });
+
+  it('renders the top-unused cleanup table when topUnused present', () => {
+    const html = renderDashboardHtml(makeDashboardData());
+    expect(html).toContain('片付け候補');
+    expect(html).toContain('tutable');
+  });
+
+  it('omits the top-unused panel when topUnused is empty', () => {
+    const html = renderDashboardHtml(makeDashboardData({ topUnused: [] }));
+    expect(html).not.toContain('片付け候補');
+  });
+
+  it('escapes a malicious assetId carried in the apply command (no XSS)', () => {
+    const evil = 'skill:"><img src=x onerror=alert(1)>';
+    const data = makeDashboardData({
+      findings: [{
+        type: 'stale', severity: 'warn', assetId: evil, kind: 'skill', name: 'n', reason: 'r',
+        lastUsed: null, idleDays: null, callCount: 0, tracked: true, footprintTokens: 100,
+        applyCommand: `curator apply --ids ${evil}`,
+      }],
+      topUnused: [],
+    });
+    const html = renderDashboardHtml(data);
+    expect(html).not.toContain('onerror=alert(1)>');
+    expect(html).toContain('onerror=alert(1)&gt;');
   });
 });

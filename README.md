@@ -97,7 +97,7 @@ curator install-skill           # /curator スキルを ~/.claude/skills/ に導
 | `curator mcp --apply` | プロジェクト定義（.mcp.json）の未使用サーバーを承認制で無効化 |
 | `curator cost --history` | Health Score の時系列推移（スパークライン付き） |
 | `curator install-skill` | `/curator` スキルラッパーを `~/.claude/skills/curator/` にインストール |
-| `curator dashboard` | 自己完結 HTML の可視化ダッシュボードを生成。`--out` `--open` `--all-projects` |
+| `curator dashboard` | 自己完結 HTML の可視化ダッシュボードを生成。findings は**使われてない順**に並び、最終使用日 / 放置日数 / 呼び出し回数を表示。**片付け候補 Top-N** と**コピペ可能な apply コマンド**付き。列クリックで並べ替え・kind/未使用フィルタ（インライン JS、外部リソースは一切なし）。`--out` `--open` `--all-projects` `--json` |
 
 `scan` / `check` / `cost` は `--all-projects` で全プロジェクトの project スコープ資産を統合できる。
 

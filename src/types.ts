@@ -15,7 +15,9 @@ export interface Asset {
   footprintTokens: number;
   /** 呼び出し時にロードされる全文の推定トークン */
   fullTokens: number;
-  modifiedAt: string;     // ISO8601
+  modifiedAt: string;     // ISO8601（最終更新 = stat.mtime）
+  /** 作成日 ISO8601（stat.birthtime、無効な FS では mtime にフォールバック）。inventory で付与 */
+  createdAt?: string;
   meta?: Record<string, unknown>; // skill の description、mcp の command 等
 }
 
